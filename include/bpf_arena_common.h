@@ -3,7 +3,7 @@
 #pragma once
 
 #ifndef WRITE_ONCE
-#define WRITE_ONCE(x, val) ((*(volatile typeof(x) *) &(x)) = (val))
+#define WRITE_ONCE(x, val) ((*(volatile typeof(x) *)&(x)) = (val))
 #endif
 
 #ifndef NUMA_NO_NODE
