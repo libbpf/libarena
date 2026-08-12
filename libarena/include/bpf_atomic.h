@@ -7,8 +7,6 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf_may_goto.h>
 
-extern bool CONFIG_X86_64 __kconfig __weak;
-
 /*
  * __unqual_typeof(x) - Declare an unqualified scalar type, leaving
  *			non-scalar types unchanged,
@@ -65,20 +63,14 @@ extern bool CONFIG_X86_64 __kconfig __weak;
 		__sync_fetch_and_add(&__val, 0); \
 	})
 
-#define smp_rmb()                   \
-	({                          \
-		if (!CONFIG_X86_64) \
-			smp_mb();   \
-		else                \
-			barrier();  \
+#define smp_rmb()           \
+	({                  \
+		smp_mb();   \
 	})
 
-#define smp_wmb()                   \
-	({                          \
-		if (!CONFIG_X86_64) \
-			smp_mb();   \
-		else                \
-			barrier();  \
+#define smp_wmb()           \
+	({                  \
+		smp_mb();   \
 	})
 
 /* Control dependency provides LOAD->STORE, provide LOAD->LOAD */
@@ -106,17 +98,13 @@ extern bool CONFIG_X86_64 __kconfig __weak;
 #define smp_load_acquire(p)                                  \
 	({                                                   \
 		__unqual_typeof(*(p)) __v = READ_ONCE(*(p)); \
-		if (!CONFIG_X86_64)                          \
-			smp_mb();                            \
-		barrier();                                   \
+		smp_mb();                            \
 		__v;                                         \
 	})
 
 #define smp_store_release(p, val)      \
 	({                             \
-		if (!CONFIG_X86_64)    \
-			smp_mb();      \
-		barrier();             \
+		smp_mb();      \
 		WRITE_ONCE(*(p), val); \
 	})
 #endif
