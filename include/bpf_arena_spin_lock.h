@@ -16,8 +16,6 @@
 #define EOPNOTSUPP 95
 #define ETIMEDOUT 110
 
-extern unsigned long CONFIG_NR_CPUS __kconfig;
-
 /*
  * Typically, we'd just rely on the definition in vmlinux.h for qspinlock, but
  * PowerPC overrides the definition to define lock->val as u32 instead of
@@ -509,7 +507,7 @@ static __always_inline int arena_spin_lock(arena_spinlock_t __arena *lock)
 {
 	int val = 0;
 
-	if (CONFIG_NR_CPUS > _Q_MAX_CPUS)
+	if (bpf_get_smp_processor_id() >= _Q_MAX_CPUS)
 		return -EOPNOTSUPP;
 
 	bpf_preempt_disable();

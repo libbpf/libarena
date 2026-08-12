@@ -6,7 +6,46 @@
 #include <libarena/buddy.h>
 
 #include <bpf_arena_spin_lock.h>
-#include <bpf_experimental.h>
+#include <bpf/bpf_core_read.h>
+#include <bpf/bpf_tracing.h>
+
+/* Keep NMI detection independent of experimental kfunc prototypes and kconfig. */
+extern unsigned int nmi_nesting __ksym __weak;
+#ifdef bpf_target_x86
+extern const int __preempt_count __ksym __weak;
+struct pcpu_hot___buddy {
+	int preempt_count;
+} __attribute__((preserve_access_index));
+extern struct pcpu_hot___buddy pcpu_hot __ksym __weak;
+#endif
+#ifdef bpf_target_s390
+extern struct lowcore *bpf_get_lowcore(void) __ksym __weak;
+#endif
+
+static __always_inline bool buddy_in_nmi(void)
+{
+	int count = 0;
+
+	/* New kernels track NMI nesting separately, independent of bit layout. */
+	if (bpf_ksym_exists(&nmi_nesting))
+		return *(unsigned int *)bpf_this_cpu_ptr(&nmi_nesting) != 0;
+
+#ifdef bpf_target_x86
+	if (bpf_ksym_exists(&__preempt_count))
+		count = *(int *)bpf_this_cpu_ptr(&__preempt_count);
+	else if (bpf_core_field_exists(pcpu_hot.preempt_count))
+		count = ((struct pcpu_hot___buddy *)bpf_this_cpu_ptr(&pcpu_hot))->preempt_count;
+#elif defined(bpf_target_arm64)
+	count = bpf_get_current_task_btf()->thread_info.preempt.count;
+#elif defined(bpf_target_powerpc) || defined(bpf_target_loongarch) || defined(bpf_target_riscv)
+	count = bpf_get_current_task_btf()->thread_info.preempt_count;
+#elif defined(bpf_target_s390)
+	count = bpf_get_lowcore()->preempt_count;
+#endif
+
+	/* Before the separate nesting counter, NMI depth occupied bits 20-23. */
+	return count & (0xfU << 20);
+}
 
 _Static_assert(BUDDY_CACHE_MAX_CPUS == _Q_MAX_CPUS,
 	       "buddy caches must cover every CPU arena spinlocks support");
@@ -53,7 +92,7 @@ static bool buddy_deferred_free_pending(struct buddy __arena *buddy);
 static void buddy_deferred_free_complete(struct buddy __arena *buddy);
 
 #define buddy_lock(buddy, flags)						\
-	(bpf_in_nmi() ? arena_spin_trylock_irqsave(&(buddy)->lock, (flags)) :	\
+	(buddy_in_nmi() ? arena_spin_trylock_irqsave(&(buddy)->lock, (flags)) :	\
 			arena_spin_lock_irqsave(&(buddy)->lock, (flags)))
 #define buddy_unlock(buddy, flags) (arena_spin_unlock_irqrestore(&(buddy)->lock, (flags)))
 
@@ -71,9 +110,13 @@ static __always_inline struct buddy_cache __arena *
 buddy_cache_enter(struct buddy __arena *buddy)
 {
 	struct buddy_cache __arena *cache;
+	u32 cpu = bpf_get_smp_processor_id();
+
+	if (cpu >= BUDDY_CACHE_MAX_CPUS)
+		return NULL;
 
 	/* The caches only exist between buddy_init() and buddy_destroy(). */
-	cache = buddy->percpu[bpf_get_smp_processor_id()];
+	cache = buddy->percpu[cpu];
 	if (unlikely(!cache))
 		return NULL;
 
@@ -853,13 +896,13 @@ static int buddy_cache_init(struct buddy __arena *buddy)
 	if (!buddy_order_cached(0))
 		return 0;
 
-	if (CONFIG_NR_CPUS > BUDDY_CACHE_MAX_CPUS)
+	if (bpf_get_smp_processor_id() >= BUDDY_CACHE_MAX_CPUS)
 		return -E2BIG;
 
 	for (order = zero; order < BUDDY_CACHE_NUM_ORDERS && can_loop; order++)
 		WRITE_ONCE(buddy->transfer[order].elems, 0);
 
-	for (cpu = zero; cpu < CONFIG_NR_CPUS && can_loop; cpu++) {
+	for (cpu = zero; cpu < BUDDY_CACHE_MAX_CPUS && can_loop; cpu++) {
 		ret = buddy_alloc_bulk(buddy, sizeof(*cache), 0,
 				       (void __arena * __arena *)&buddy->percpu[cpu]);
 		if (ret)
@@ -878,7 +921,7 @@ static void buddy_cache_destroy(struct buddy __arena *buddy)
 {
 	unsigned int cpu, order;
 
-	for (cpu = zero; cpu < min(CONFIG_NR_CPUS, BUDDY_CACHE_MAX_CPUS) && can_loop; cpu++)
+	for (cpu = zero; cpu < BUDDY_CACHE_MAX_CPUS && can_loop; cpu++)
 		WRITE_ONCE(buddy->percpu[cpu], NULL);
 	for (order = zero; order < BUDDY_CACHE_NUM_ORDERS && can_loop; order++)
 		WRITE_ONCE(buddy->transfer[order].elems, 0);
@@ -1126,7 +1169,7 @@ static void __arena *buddy_alloc_memory(struct buddy __arena *buddy, size_t size
 	if (address)
 		goto done;
 
-	if (!grow || bpf_in_nmi())
+	if (!grow || buddy_in_nmi())
 		return NULL;
 
 	/* Get a new chunk. */
@@ -1201,7 +1244,7 @@ int buddy_grow(struct buddy __arena *buddy, size_t nr_chunks)
 	unsigned long flags;
 	size_t chunk_index;
 
-	if (bpf_in_nmi())
+	if (buddy_in_nmi())
 		return -EOPNOTSUPP;
 
 	for (chunk_index = zero; chunk_index < nr_chunks && can_loop; chunk_index++) {
