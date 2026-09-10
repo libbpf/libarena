@@ -47,7 +47,7 @@ __weak int test_buddy_create(void)
 	const int iters = 10;
 	int ret, i;
 
-	for (i = zero; i < iters && can_loop; i++) {
+	bpf_for(i, 0, iters) {
 		ret = buddy_init(&buddy);
 		if (ret)
 			return ret;
@@ -77,7 +77,7 @@ __weak int test_buddy_alloc(void)
 	void __arena *mem;
 	int ret, i;
 
-	for (i = zero; i < 8 && can_loop; i++) {
+	bpf_for(i, 0, 8) {
 		ret = buddy_init(&buddy);
 		if (ret)
 			return ret;
@@ -105,7 +105,7 @@ __weak int test_buddy_alloc_free(void)
 	if (ret)
 		return ret;
 
-	for (i = zero; i < iters && can_loop; i++) {
+	bpf_for(i, 0, iters) {
 		mem = buddy_alloc(&buddy, alloc_free_sizes[(i * 5) % 8]);
 		if (!mem) {
 			buddy_destroy(&buddy);
@@ -141,7 +141,7 @@ __weak int test_buddy_alloc_multiple(void)
 	 * segarr entry. Use the poison value to poison the entire
 	 * allocated memory according to the size given.
 	 */
-	for (i = zero; i < SEGARRLEN && can_loop; i++) {
+	bpf_for(i, 0, SEGARRLEN) {
 		sz = alloc_multiple_sizes[i % 9];
 		poison = (u8)i;
 
@@ -156,7 +156,7 @@ __weak int test_buddy_alloc_multiple(void)
 		segarr[i].sz = sz;
 		segarr[i].poison = poison;
 
-		for (j = zero; j < sz && can_loop; j++) {
+		bpf_for(j, 0, sz) {
 			mem[j] = poison;
 			if (mem[j] != poison) {
 				buddy_destroy(&buddy);
@@ -172,14 +172,14 @@ __weak int test_buddy_alloc_multiple(void)
 	 * return an error. Skip some elements to test destroying the
 	 * buddy allocator while data is still allocated.
 	 */
-	for (i = 10; i < SEGARRLEN && can_loop; i++) {
+	bpf_for(i, 10, SEGARRLEN) {
 		idx = (i * 17) % SEGARRLEN;
 
 		mem = segarr[idx].block;
 		sz = segarr[idx].sz;
 		poison = segarr[idx].poison;
 
-		for (j = zero; j < sz && can_loop; j++) {
+		bpf_for(j, 0, sz) {
 			if (mem[j] != poison) {
 				buddy_destroy(&buddy);
 				arena_stdout("%s:%d %lx %u vs %u", __func__,
@@ -208,7 +208,7 @@ __weak int test_buddy_alignment(void)
 		return ret;
 
 	/* Allocate various sizes and check alignment */
-	for (i = zero; i < 17 && can_loop; i++) {
+	bpf_for(i, 0, 17) {
 		barrier_var(i);
 		ptrs[i] = buddy_alloc(&buddy, alignment_sizes[i]);
 		if (!ptrs[i]) {
@@ -229,7 +229,7 @@ __weak int test_buddy_alignment(void)
 	}
 
 	/* Free all allocations */
-	for (i = zero; i < 17 && can_loop; i++) {
+	bpf_for(i, 0, 17) {
 		barrier_var(i);
 		buddy_free(&buddy, ptrs[i]);
 	}
@@ -268,7 +268,7 @@ __weak int test_buddy_bulk_alloc_free(void)
 		goto out;
 	}
 
-	for (i = zero; i < TEST_BULK_ITEMS && can_loop; i++) {
+	bpf_for(i, 0, TEST_BULK_ITEMS) {
 		mem = alloc_path_test.bulk[i];
 		if (!mem) {
 			ret = -ENOMEM;
@@ -280,13 +280,13 @@ __weak int test_buddy_bulk_alloc_free(void)
 			goto out;
 		}
 
-		for (j = zero; j < TEST_BULK_SIZE && can_loop; j++)
+		bpf_for(j, 0, TEST_BULK_SIZE)
 			mem[j] = (u8)(i + 1);
 	}
 
-	for (i = zero; i < TEST_BULK_ITEMS && can_loop; i++) {
+	bpf_for(i, 0, TEST_BULK_ITEMS) {
 		mem = alloc_path_test.bulk[i];
-		for (j = zero; j < TEST_BULK_SIZE && can_loop; j++) {
+		bpf_for(j, 0, TEST_BULK_SIZE) {
 			if (mem[j] != (u8)(i + 1)) {
 				ret = -EINVAL;
 				goto out;
@@ -314,7 +314,7 @@ __weak int test_buddy_bulk_alloc_free(void)
 	if (ret)
 		goto out;
 
-	for (i = zero; i < TEST_BULK_ITEMS && can_loop; i++) {
+	bpf_for(i, 0, TEST_BULK_ITEMS) {
 		idx = (i * 5) & (TEST_BULK_ITEMS - 1);
 		ret = buddy_free(&buddy, alloc_path_test.bulk[idx]);
 		if (ret)
@@ -381,7 +381,7 @@ __weak int test_buddy_cache_paths(void)
 	}
 
 	/* Drain the local stack, then verify that the next miss refills it. */
-	for (i = zero; i < BUDDY_CACHE_BATCH_SIZE - 2 && can_loop; i++) {
+	bpf_for(i, 0, BUDDY_CACHE_BATCH_SIZE - 2) {
 		alloc_path_test.drain[i] = buddy_alloc(&buddy, TEST_CACHE_SIZE);
 		if (!alloc_path_test.drain[i]) {
 			ret = -ENOMEM;
@@ -407,9 +407,7 @@ __weak int test_buddy_cache_paths(void)
 	if (ret)
 		goto out;
 
-	for (i = zero;
-	     i <= BUDDY_CACHE_CAPACITY - BUDDY_CACHE_BATCH_SIZE && can_loop;
-	     i++) {
+	bpf_for(i, 0, (BUDDY_CACHE_CAPACITY - BUDDY_CACHE_BATCH_SIZE) + 1) {
 		ret = buddy_free(&buddy, alloc_path_test.bulk[i]);
 		if (ret)
 			goto out;
@@ -442,9 +440,7 @@ __weak int test_buddy_cache_paths(void)
 	}
 
 	/* Drain locally, then consume the batch without touching buddy. */
-	for (i = zero;
-	     i < BUDDY_CACHE_CAPACITY - BUDDY_CACHE_BATCH_SIZE && can_loop;
-	     i++) {
+	bpf_for(i, 0, BUDDY_CACHE_CAPACITY - BUDDY_CACHE_BATCH_SIZE) {
 		alloc_path_test.drain[i] = buddy_alloc(&buddy, TEST_CACHE_SIZE);
 		if (!alloc_path_test.drain[i]) {
 			ret = -ENOMEM;
