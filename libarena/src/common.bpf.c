@@ -81,7 +81,7 @@ __weak u64 arena_calloc_internal(size_t ncount, size_t size)
 	return (u64)mem;
 }
 
-__weak void arena_free(void __arena *ptr)
+__weak void arena_free(void __arena *ptr __arg_arena)
 {
 	buddy_free(&buddy, ptr);
 }
