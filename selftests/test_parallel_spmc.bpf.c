@@ -559,7 +559,7 @@ spmc_burst_owner_round(u64 round)
 	base = round * TEST_SPMC_BURST_BURST;
 	round_steals = 0;
 
-	for (i = zero; i < TEST_SPMC_BURST_BURST && can_loop; i++) {
+	bpf_for(i, 0, TEST_SPMC_BURST_BURST) {
 		ret = spmc_owned_add(spmc, base + i);
 		if (ret)
 			return ret;
@@ -581,7 +581,7 @@ spmc_burst_owner_round(u64 round)
 	if (stolen > TEST_SPMC_BURST_BURST)
 		return -EINVAL;
 
-	for (i = zero; i < TEST_SPMC_BURST_BURST - stolen && can_loop; i++) {
+	bpf_for(i, 0, TEST_SPMC_BURST_BURST - stolen) {
 		ret = spmc_owned_remove(spmc, &val);
 		if (ret)
 			return ret;

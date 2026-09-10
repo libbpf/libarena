@@ -191,7 +191,7 @@ static int buddy_transfer_take_batch(struct buddy __arena *buddy __arg_arena, in
 	}
 
 	start = elems - BUDDY_CACHE_BATCH_SIZE;
-	for (i = zero; i < BUDDY_CACHE_BATCH_SIZE && can_loop; i++)
+	bpf_for(i, 0, BUDDY_CACHE_BATCH_SIZE)
 		WRITE_ONCE(slots->objects[i],
 			   READ_ONCE(transfer->objects[start + i]));
 
@@ -230,7 +230,7 @@ static int buddy_transfer_put_batch(struct buddy __arena *buddy __arg_arena, int
 	}
 
 	start = local_elems - BUDDY_CACHE_BATCH_SIZE;
-	for (i = zero; i < BUDDY_CACHE_BATCH_SIZE && can_loop; i++)
+	bpf_for(i, 0, BUDDY_CACHE_BATCH_SIZE)
 		WRITE_ONCE(transfer->objects[elems + i],
 			   READ_ONCE(slots->objects[start + i]));
 
@@ -688,7 +688,7 @@ int add_leftovers_to_freelist(struct buddy_chunk __arena *chunk __arg_arena, u32
 	u64 ord;
 	u32 idx;
 
-	for (ord = min_order; ord < max_order && can_loop; ord++) {
+	bpf_for(ord, min_order, max_order) {
 		/* Mark the buddy as free and add it to the freelists. */
 		idx = cur_idx + (1 << ord);
 
@@ -760,7 +760,7 @@ static struct buddy_chunk __arena *buddy_chunk_get(struct buddy __arena *buddy _
 	asan_unpoison(chunk, sizeof(*chunk));
 
 	/* Mark all freelists as empty. */
-	for (ord = zero; ord < BUDDY_CHUNK_NUM_ORDERS && can_loop; ord++)
+	bpf_for(ord, 0, BUDDY_CHUNK_NUM_ORDERS)
 		chunk->freelists[ord] = BUDDY_CHUNK_ITEMS;
 
 	/*
@@ -899,10 +899,10 @@ static int buddy_cache_init(struct buddy __arena *buddy __arg_arena)
 	if (bpf_get_smp_processor_id() >= BUDDY_CACHE_MAX_CPUS)
 		return -E2BIG;
 
-	for (order = zero; order < BUDDY_CACHE_NUM_ORDERS && can_loop; order++)
+	bpf_for(order, 0, BUDDY_CACHE_NUM_ORDERS)
 		WRITE_ONCE(buddy->transfer[order].elems, 0);
 
-	for (cpu = zero; cpu < BUDDY_CACHE_MAX_CPUS && can_loop; cpu++) {
+	bpf_for(cpu, 0, BUDDY_CACHE_MAX_CPUS) {
 		ret = buddy_alloc_bulk(buddy, sizeof(*cache), 0,
 				       (void __arena * __arena *)&buddy->percpu[cpu]);
 		if (ret)
@@ -910,7 +910,7 @@ static int buddy_cache_init(struct buddy __arena *buddy __arg_arena)
 
 		cache = buddy->percpu[cpu];
 		WRITE_ONCE(cache->active, 0);
-		for (order = zero; order < BUDDY_CACHE_NUM_ORDERS && can_loop; order++)
+		bpf_for(order, 0, BUDDY_CACHE_NUM_ORDERS)
 			WRITE_ONCE(cache->orders[order].elems, 0);
 	}
 
@@ -921,9 +921,9 @@ static void buddy_cache_destroy(struct buddy __arena *buddy __arg_arena)
 {
 	unsigned int cpu, order;
 
-	for (cpu = zero; cpu < BUDDY_CACHE_MAX_CPUS && can_loop; cpu++)
+	bpf_for(cpu, 0, BUDDY_CACHE_MAX_CPUS)
 		WRITE_ONCE(buddy->percpu[cpu], NULL);
-	for (order = zero; order < BUDDY_CACHE_NUM_ORDERS && can_loop; order++)
+	bpf_for(order, 0, BUDDY_CACHE_NUM_ORDERS)
 		WRITE_ONCE(buddy->transfer[order].elems, 0);
 }
 
@@ -1019,7 +1019,7 @@ __weak u64 buddy_chunk_alloc(struct buddy_chunk __arena *chunk __arg_arena, int 
 	u64 order = 0;
 	u64 i;
 
-	for (order = order_req + order_allocs; order < BUDDY_CHUNK_NUM_ORDERS && can_loop; order++) {
+	bpf_for(order, order_req + order_allocs, BUDDY_CHUNK_NUM_ORDERS) {
 		if (chunk->freelists[order] != BUDDY_CHUNK_ITEMS)
 			break;
 	}
@@ -1045,14 +1045,13 @@ __weak u64 buddy_chunk_alloc(struct buddy_chunk __arena *chunk __arg_arena, int 
 	 * For a bulk allocation, record the allocation state and size
 	 * of each item separately so each can be freed independently.
 	 */
-	for (i = zero, idx = retidx; i < (1U << order_allocs) && can_loop; i++) {
+	bpf_for(i, 0, 1U << order_allocs) {
+		idx = retidx + (i << order_req);
 		if (idx_set_order(chunk, idx, order_req))
 			return (u64)NULL;
 
 		if (idx_set_allocated(chunk, idx, true))
 			return (u64)NULL;
-
-		idx += 1U << order_req;
 	}
 
 	/*
@@ -1064,7 +1063,7 @@ __weak u64 buddy_chunk_alloc(struct buddy_chunk __arena *chunk __arg_arena, int 
 		return (u64)NULL;
 
 	/* If we allocated from a larger-order chunk, split the buddies. */
-	for (i = order_req + order_allocs; i < order && can_loop; i++) {
+	bpf_for(i, order_req + order_allocs, order) {
 		/*
 		 * Flip the bit for the current order (the bit is guaranteed
 		 * to be 0, so just add 1 << i).
@@ -1189,7 +1188,8 @@ done:
 	 * the padding between the requested size and the rounded buddy
 	 * allocation poisoned.
 	 */
-	for (i = zero, offset = zero; i < (1U << norder) && can_loop; i++, offset += alloc_size) {
+	bpf_for(i, 0, 1U << norder) {
+		offset = i * alloc_size;
 		object = (u8 __arena *)address + offset;
 
 		if (size < BUDDY_HEADER_OFF + sizeof(struct buddy_header __arena))
@@ -1247,7 +1247,7 @@ int buddy_grow(struct buddy __arena *buddy __arg_arena, size_t nr_chunks)
 	if (buddy_in_nmi())
 		return -EOPNOTSUPP;
 
-	for (chunk_index = zero; chunk_index < nr_chunks && can_loop; chunk_index++) {
+	bpf_for(chunk_index, 0, nr_chunks) {
 		chunk = buddy_chunk_get(buddy);
 		if (!chunk)
 			return -ENOMEM;
@@ -1288,8 +1288,10 @@ static int buddy_alloc_bulk_memory(struct buddy __arena *buddy __arg_arena, size
 		return -ENOMEM;
 
 	step = BUDDY_MIN_ALLOC_BYTES << order;
-	for (i = zero, off = zero; i < (1U << norder) && can_loop; i++, off += step)
+	bpf_for(i, 0, 1U << norder) {
+		off = i * step;
 		out[i] = &address[off];
+	}
 
 	return 0;
 }
@@ -1315,6 +1317,7 @@ static __always_inline int buddy_free_unlocked(struct buddy __arena *buddy __arg
 	struct buddy_chunk __arena *chunk;
 	bool allocated;
 	u8 order;
+	u32 start_order;
 	int ret;
 
 	if (!buddy)
@@ -1347,7 +1350,8 @@ static __always_inline int buddy_free_unlocked(struct buddy __arena *buddy __arg
 	 * For every coalescing step, keep the left buddy and
 	 * drop the right buddy's header.
 	 */
-	for (; order < BUDDY_CHUNK_NUM_ORDERS && can_loop; order++) {
+	start_order = order;
+	bpf_for(order, start_order, BUDDY_CHUNK_NUM_ORDERS) {
 		buddy_idx = idx ^ (1 << order);
 
 		/* Check if the buddy is actually free. */
@@ -1378,6 +1382,8 @@ static __always_inline int buddy_free_unlocked(struct buddy __arena *buddy __arg
 		buddy_header = idx_to_header(chunk, buddy_idx);
 		asan_poison(buddy_header, BUDDY_POISONED,
 			    sizeof(*buddy_header));
+		/* Preserve the final order if the iterator reaches its end. */
+		order++;
 	}
 
 	/* Header properly freed but not in any freelists yet .*/
@@ -1436,7 +1442,7 @@ static int buddy_deferred_free_start_bulk(struct buddy __arena *buddy __arg_aren
 	 */
 	first = NULL;
 	last = NULL;
-	for (i = zero; i < naddrs && can_loop; i++) {
+	bpf_for(i, 0, naddrs) {
 		addr = addrs[i];
 		if (!addr)
 			continue;
@@ -1539,7 +1545,7 @@ __weak int buddy_free_bulk(struct buddy __arena *buddy __arg_arena, void __arena
 		return buddy_deferred_free_start_bulk(buddy, addrs, naddrs);
 	}
 
-	for (i = zero; i < naddrs && can_loop; i++) {
+	bpf_for(i, 0, naddrs) {
 		/* NULL pointers are ignored. */
 		if (!addrs[i])
 			continue;
