@@ -124,7 +124,7 @@ int bmp_clear(size_t bits, struct arena_bitmap __arena *bmp __arg_arena)
 	size_t nwords = BITS_TO_LONG_LONGS(bits);
 	volatile u32 i;
 
-	for (i = zero; i < nwords && can_loop; i++)
+	bpf_for(i, 0, nwords)
 		bmp->bits[i] = 0;
 
 	return 0;
@@ -143,7 +143,7 @@ int bmp_and(size_t bits, struct arena_bitmap __arena *dst __arg_arena, struct ar
 	size_t nwords = BITS_TO_LONG_LONGS(bits);
 	volatile u32 i;
 
-	for (i = zero; i < nwords && can_loop; i++)
+	bpf_for(i, 0, nwords)
 		dst->bits[i] = src1->bits[i] & src2->bits[i];
 
 	if (nwords && bits % BITS_PER_LONG_LONG)
@@ -158,7 +158,7 @@ int bmp_or(size_t bits, struct arena_bitmap __arena *dst __arg_arena, struct are
 	size_t nwords = BITS_TO_LONG_LONGS(bits);
 	volatile u32 i;
 
-	for (i = zero; i < nwords && can_loop; i++)
+	bpf_for(i, 0, nwords)
 		dst->bits[i] = src1->bits[i] | src2->bits[i];
 
 	if (nwords && bits % BITS_PER_LONG_LONG)
@@ -173,7 +173,7 @@ bool bmp_empty(size_t bits, struct arena_bitmap __arena *bmp __arg_arena)
 	size_t nwords = BITS_TO_LONG_LONGS(bits);
 	volatile u32 i;
 
-	for (i = zero; i < nwords && can_loop; i++) {
+	bpf_for(i, 0, nwords) {
 		u64 mask = (i == nwords - 1) ? bmp_last_word_mask(bits) : ~0ULL;
 
 		if (bmp->bits[i] & mask)
@@ -189,7 +189,7 @@ int bmp_copy(size_t bits, struct arena_bitmap __arena *dst __arg_arena, struct a
 	size_t nwords = BITS_TO_LONG_LONGS(bits);
 	volatile u32 i;
 
-	for (i = zero; i < nwords && can_loop; i++)
+	bpf_for(i, 0, nwords)
 		dst->bits[i] = src->bits[i];
 
 	if (nwords && bits % BITS_PER_LONG_LONG)
@@ -204,7 +204,7 @@ bool bmp_subset(size_t bits, struct arena_bitmap __arena *big __arg_arena, struc
 	size_t nwords = BITS_TO_LONG_LONGS(bits);
 	volatile u32 i;
 
-	for (i = zero; i < nwords && can_loop; i++) {
+	bpf_for(i, 0, nwords) {
 		u64 mask = (i == nwords - 1) ? bmp_last_word_mask(bits) : ~0ULL;
 
 		if (~big->bits[i] & small->bits[i] & mask)
@@ -220,7 +220,7 @@ bool bmp_intersects(size_t bits, struct arena_bitmap __arena *arg1 __arg_arena, 
 	size_t nwords = BITS_TO_LONG_LONGS(bits);
 	volatile u32 i;
 
-	for (i = zero; i < nwords && can_loop; i++) {
+	bpf_for(i, 0, nwords) {
 		u64 mask = (i == nwords - 1) ? bmp_last_word_mask(bits) : ~0ULL;
 
 		if (arg1->bits[i] & arg2->bits[i] & mask)
@@ -236,7 +236,7 @@ int bmp_print(size_t bits, struct arena_bitmap __arena *bmp __arg_arena)
 	size_t nwords = BITS_TO_LONG_LONGS(bits);
 	volatile u32 i;
 
-	for (i = zero; i < nwords && can_loop; i++)
+	bpf_for(i, 0, nwords)
 		arena_stderr("%016llx ", bmp->bits[i]);
 
 	return 0;

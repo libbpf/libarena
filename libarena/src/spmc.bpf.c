@@ -39,7 +39,7 @@ int spmc_arr_copy(volatile struct spmc_arr __arena *dst __arg_arena,
 {
 	u64 i;
 
-	for (i = t; i < b && can_loop; i++)
+	bpf_for(i, t, b)
 		spmc_arr_put(dst, i, spmc_arr_get(src, i));
 
 	return 0;
@@ -205,7 +205,7 @@ u64 spmc_create_internal(void)
 	spmc->bottom = 0;
 	spmc->top = 0;
 
-	for (i = 0; i < SPMC_ARR_ORDERS && can_loop; i++) {
+	bpf_for(i, 0, SPMC_ARR_ORDERS) {
 		spmc->arr[i].data = NULL;
 		spmc->arr[i].order = i;
 	}
@@ -229,7 +229,7 @@ int spmc_destroy(struct spmc __arena *spmc __arg_arena)
 	if (unlikely(!spmc))
 		return -EINVAL;
 
-	for (i = 0; i < SPMC_ARR_ORDERS && can_loop; i++)
+	bpf_for(i, 0, SPMC_ARR_ORDERS)
 		arena_free(spmc->arr[i].data);
 
 	arena_free(spmc);

@@ -880,7 +880,7 @@ int rb_print_pop_up(struct rbnode __arena **rbnodep __arg_arena, u8 *depthp, enu
 	rbnode = *rbnodep;
 	depth = *depthp;
 
-	for (j = 0; j < RB_MAXLVL_PRINT && can_loop; j++) {
+	bpf_for(j, 0, RB_MAXLVL_PRINT) {
 		if (*state != RB_RIGHT_VISITED)
 			break;
 

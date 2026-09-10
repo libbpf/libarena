@@ -358,7 +358,7 @@ int add_leftovers_to_freelist(struct buddy_chunk __arena *chunk __arg_arena, u32
 	u64 ord;
 	u32 idx;
 
-	for (ord = min_order; ord < max_order && can_loop; ord++) {
+	bpf_for(ord, min_order, max_order) {
 		/* Mark the buddy as free and add it to the freelists. */
 		idx = cur_idx + (1 << ord);
 
@@ -430,7 +430,7 @@ static struct buddy_chunk __arena *buddy_chunk_get(struct buddy __arena *buddy)
 	asan_unpoison(chunk, sizeof(*chunk));
 
 	/* Mark all freelists as empty. */
-	for (ord = zero; ord < BUDDY_CHUNK_NUM_ORDERS && can_loop; ord++)
+	bpf_for(ord, 0, BUDDY_CHUNK_NUM_ORDERS)
 		chunk->freelists[ord] = BUDDY_CHUNK_ITEMS;
 
 	/*
@@ -636,7 +636,7 @@ __weak u64 buddy_chunk_alloc(struct buddy_chunk __arena *chunk __arg_arena, int 
 	u64 order = 0;
 	u64 i;
 
-	for (order = order_req; order < BUDDY_CHUNK_NUM_ORDERS && can_loop; order++) {
+	bpf_for(order, order_req, BUDDY_CHUNK_NUM_ORDERS) {
 		if (chunk->freelists[order] != BUDDY_CHUNK_ITEMS)
 			break;
 	}
@@ -673,7 +673,7 @@ __weak u64 buddy_chunk_alloc(struct buddy_chunk __arena *chunk __arg_arena, int 
 		return (u64)NULL;
 
 	/* If we allocated from a larger-order chunk, split the buddies. */
-	for (i = order_req; i < order && can_loop; i++) {
+	bpf_for(i, order_req, order) {
 		/*
 		 * Flip the bit for the current order (the bit is guaranteed
 		 * to be 0, so just add 1 << i).
