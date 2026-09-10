@@ -229,9 +229,11 @@ u64 rb_node_alloc_internal(u64 key, u64 value)
 }
 
 __weak
-void rb_node_free(struct rbnode __arena *rbnode __arg_arena)
+int rb_node_free(struct rbnode __arena *rbnode __arg_arena)
 {
 	arena_free(rbnode);
+
+	return 0;
 }
 
 static

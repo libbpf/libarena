@@ -80,7 +80,7 @@ int rb_remove_node(struct rbtree __arena *rbtree, struct rbnode __arena *node);
 u64 rb_node_alloc_internal(u64 key, u64 value);
 #define rb_node_alloc(key, value) \
 	((struct rbnode __arena *)rb_node_alloc_internal((key), (value)))
-void rb_node_free(struct rbnode __arena *rbnode);
+int rb_node_free(struct rbnode __arena *rbnode);
 
 int rb_integrity_check(struct rbtree __arena *rbtree);
 

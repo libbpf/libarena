@@ -403,7 +403,7 @@ int spmc_wait_for_stealers_to_start(u64 target)
 }
 
 __weak
-void spmc_waste_time(void)
+int spmc_waste_time(void)
 {
 	int i;
 	int j;
@@ -412,6 +412,8 @@ void spmc_waste_time(void)
 		/* Random computation. */
 		WRITE_ONCE(j, i * 17 + 23);
 	}
+
+	return 0;
 }
 
 static int spmc_resize_owner(void)
