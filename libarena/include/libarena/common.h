@@ -65,7 +65,18 @@ struct {
 volatile u32 zero __weak;
 extern volatile u64 asan_violated;
 
-int arena_fls(__u64 word);
+/*
+ * Inline rather than a global function: buddy_chunk_get() derives its loop
+ * bound from this, and an opaque call leaves the result unbounded, so the
+ * loop state never converges and the verifier blows its jump limit.
+ */
+static __always_inline int arena_fls(__u64 word)
+{
+	if (!word)
+		return 0;
+
+	return 64 - __builtin_clzll(word);
+}
 
 u64 arena_malloc_internal(size_t size);
 #define arena_malloc(size) ((void __arena *)arena_malloc_internal((size)))

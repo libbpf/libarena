@@ -16,14 +16,6 @@ volatile u32 zero = 0;
  */
 struct arena_qnode __arena __hidden qnodes[_Q_MAX_CPUS][_Q_MAX_NODES];
 
-int arena_fls(__u64 word)
-{
-	if (!word)
-		return 0;
-
-	return 64 - __builtin_clzll(word);
-}
-
 SEC("syscall")
 __weak int arena_get_info(struct arena_get_info_args *args)
 {
