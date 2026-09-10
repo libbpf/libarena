@@ -27,6 +27,9 @@ __weak int arena_get_info(struct arena_get_info_args *args)
 SEC("syscall")
 __weak int arena_alloc_reserve(struct arena_alloc_reserve_args *args)
 {
+	if (!bpf_ksym_exists(bpf_arena_reserve_pages))
+		return -EOPNOTSUPP;
+
 	return bpf_arena_reserve_pages(&arena, NULL, args->nr_pages);
 }
 

@@ -60,6 +60,10 @@ static int buddy_reserve_arena_vaddr(struct buddy __arena *buddy)
 {
 	buddy->vaddr = 0;
 
+	/* Older kernels can still allocate directly at the aligned addresses. */
+	if (!bpf_ksym_exists(bpf_arena_reserve_pages))
+		return 0;
+
 	return bpf_arena_reserve_pages(&arena,
 				       (void __arena *)BUDDY_VADDR_OFFSET,
 				       BUDDY_VADDR_SIZE / __PAGE_SIZE);
@@ -70,9 +74,10 @@ static int buddy_reserve_arena_vaddr(struct buddy __arena *buddy)
  */
 static void buddy_unreserve_arena_vaddr(struct buddy __arena *buddy)
 {
-	bpf_arena_free_pages(
-		&arena, (void __arena *)(BUDDY_VADDR_OFFSET + buddy->vaddr),
-		(BUDDY_VADDR_SIZE - buddy->vaddr) / __PAGE_SIZE);
+	if (bpf_ksym_exists(bpf_arena_reserve_pages))
+		bpf_arena_free_pages(
+			&arena, (void __arena *)(BUDDY_VADDR_OFFSET + buddy->vaddr),
+			(BUDDY_VADDR_SIZE - buddy->vaddr) / __PAGE_SIZE);
 
 	buddy->vaddr = 0;
 }
@@ -405,9 +410,10 @@ static struct buddy_chunk __arena *buddy_chunk_get(struct buddy __arena *buddy)
 	if (vaddr % BUDDY_CHUNK_BYTES)
 		return NULL;
 
-	/* Unreserve the address space. */
-	bpf_arena_free_pages(&arena, (void __arena *)vaddr,
-			     BUDDY_CHUNK_PAGES);
+	/* Turn a reserved range into an allocation on kernels that support it. */
+	if (bpf_ksym_exists(bpf_arena_reserve_pages))
+		bpf_arena_free_pages(&arena, (void __arena *)vaddr,
+				     BUDDY_CHUNK_PAGES);
 
 	chunk = bpf_arena_alloc_pages(&arena, (void __arena *)vaddr,
 				      BUDDY_CHUNK_PAGES, NUMA_NO_NODE, 0);
