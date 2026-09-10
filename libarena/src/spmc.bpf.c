@@ -26,19 +26,23 @@ u64 spmc_arr_get(volatile struct spmc_arr __arena *spmc_arr __arg_arena, u64 ind
 }
 
 static inline
-void spmc_arr_put(volatile struct spmc_arr __arena *spmc_arr __arg_arena, u64 ind, u64 value)
+int spmc_arr_put(volatile struct spmc_arr __arena *spmc_arr __arg_arena, u64 ind, u64 value)
 {
 	WRITE_ONCE(spmc_arr->data[ind % spmc_arr_size(spmc_arr)], value);
+
+	return 0;
 }
 
 static inline
-void spmc_arr_copy(volatile struct spmc_arr __arena *dst __arg_arena,
+int spmc_arr_copy(volatile struct spmc_arr __arena *dst __arg_arena,
 		   volatile struct spmc_arr __arena *src __arg_arena, u64 b, u64 t)
 {
 	u64 i;
 
 	for (i = t; i < b && can_loop; i++)
 		spmc_arr_put(dst, i, spmc_arr_get(src, i));
+
+	return 0;
 }
 
 static inline

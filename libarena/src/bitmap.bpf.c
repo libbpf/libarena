@@ -29,9 +29,11 @@ u64 bmp_alloc_internal(size_t bits)
 }
 
 __weak
-void bmp_free(struct arena_bitmap __arena *bmp __arg_arena)
+int bmp_free(struct arena_bitmap __arena *bmp __arg_arena)
 {
 	arena_free(bmp);
+
+	return 0;
 }
 
 __weak
@@ -83,7 +85,7 @@ bool bmp_test_and_set_bit(u32 bit, struct arena_bitmap __arena *bmp __arg_arena)
 }
 
 __weak
-void bmp_clear_bit(u32 bit, struct arena_bitmap __arena *bmp __arg_arena)
+int bmp_clear_bit(u32 bit, struct arena_bitmap __arena *bmp __arg_arena)
 {
 	u64 val = BIT_MASK(bit);
 	u32 idx = BIT_WORD(bit);
@@ -95,10 +97,12 @@ void bmp_clear_bit(u32 bit, struct arena_bitmap __arena *bmp __arg_arena)
 		actual = cmpxchg(&bmp->bits[idx], old, new);
 
 	} while (actual != old && can_loop);
+
+	return 0;
 }
 
 __weak
-void bmp_set_bit(u32 bit, struct arena_bitmap __arena *bmp __arg_arena)
+int bmp_set_bit(u32 bit, struct arena_bitmap __arena *bmp __arg_arena)
 {
 	u64 val = BIT_MASK(bit);
 	u32 idx = BIT_WORD(bit);
@@ -110,16 +114,20 @@ void bmp_set_bit(u32 bit, struct arena_bitmap __arena *bmp __arg_arena)
 		actual = cmpxchg(&bmp->bits[idx], old, new);
 
 	} while (actual != old && can_loop);
+
+	return 0;
 }
 
 __weak
-void bmp_clear(size_t bits, struct arena_bitmap __arena *bmp __arg_arena)
+int bmp_clear(size_t bits, struct arena_bitmap __arena *bmp __arg_arena)
 {
 	size_t nwords = BITS_TO_LONG_LONGS(bits);
 	volatile u32 i;
 
 	for (i = zero; i < nwords && can_loop; i++)
 		bmp->bits[i] = 0;
+
+	return 0;
 }
 
 static __always_inline u64 bmp_last_word_mask(size_t bits)
@@ -130,7 +138,7 @@ static __always_inline u64 bmp_last_word_mask(size_t bits)
 }
 
 __weak
-void bmp_and(size_t bits, struct arena_bitmap __arena *dst __arg_arena, struct arena_bitmap __arena *src1 __arg_arena, struct arena_bitmap __arena *src2 __arg_arena)
+int bmp_and(size_t bits, struct arena_bitmap __arena *dst __arg_arena, struct arena_bitmap __arena *src1 __arg_arena, struct arena_bitmap __arena *src2 __arg_arena)
 {
 	size_t nwords = BITS_TO_LONG_LONGS(bits);
 	volatile u32 i;
@@ -140,10 +148,12 @@ void bmp_and(size_t bits, struct arena_bitmap __arena *dst __arg_arena, struct a
 
 	if (nwords && bits % BITS_PER_LONG_LONG)
 		dst->bits[nwords - 1] &= bmp_last_word_mask(bits);
+
+	return 0;
 }
 
 __weak
-void bmp_or(size_t bits, struct arena_bitmap __arena *dst __arg_arena, struct arena_bitmap __arena *src1 __arg_arena, struct arena_bitmap __arena *src2 __arg_arena)
+int bmp_or(size_t bits, struct arena_bitmap __arena *dst __arg_arena, struct arena_bitmap __arena *src1 __arg_arena, struct arena_bitmap __arena *src2 __arg_arena)
 {
 	size_t nwords = BITS_TO_LONG_LONGS(bits);
 	volatile u32 i;
@@ -153,6 +163,8 @@ void bmp_or(size_t bits, struct arena_bitmap __arena *dst __arg_arena, struct ar
 
 	if (nwords && bits % BITS_PER_LONG_LONG)
 		dst->bits[nwords - 1] &= bmp_last_word_mask(bits);
+
+	return 0;
 }
 
 __weak
@@ -172,7 +184,7 @@ bool bmp_empty(size_t bits, struct arena_bitmap __arena *bmp __arg_arena)
 }
 
 __weak
-void bmp_copy(size_t bits, struct arena_bitmap __arena *dst __arg_arena, struct arena_bitmap __arena *src __arg_arena)
+int bmp_copy(size_t bits, struct arena_bitmap __arena *dst __arg_arena, struct arena_bitmap __arena *src __arg_arena)
 {
 	size_t nwords = BITS_TO_LONG_LONGS(bits);
 	volatile u32 i;
@@ -182,6 +194,8 @@ void bmp_copy(size_t bits, struct arena_bitmap __arena *dst __arg_arena, struct 
 
 	if (nwords && bits % BITS_PER_LONG_LONG)
 		dst->bits[nwords - 1] &= bmp_last_word_mask(bits);
+
+	return 0;
 }
 
 __weak
@@ -217,11 +231,13 @@ bool bmp_intersects(size_t bits, struct arena_bitmap __arena *arg1 __arg_arena, 
 }
 
 __weak
-void bmp_print(size_t bits, struct arena_bitmap __arena *bmp __arg_arena)
+int bmp_print(size_t bits, struct arena_bitmap __arena *bmp __arg_arena)
 {
 	size_t nwords = BITS_TO_LONG_LONGS(bits);
 	volatile u32 i;
 
 	for (i = zero; i < nwords && can_loop; i++)
 		arena_stderr("%016llx ", bmp->bits[i]);
+
+	return 0;
 }

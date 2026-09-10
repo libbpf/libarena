@@ -53,7 +53,7 @@ u64 arena_malloc_internal(size_t size);
 u64 arena_calloc_internal(size_t ncount, size_t size);
 #define arena_calloc(ncount, size) \
 	((void __arena *)arena_calloc_internal((ncount), (size)))
-void arena_free(void __arena *ptr);
+int arena_free(void __arena *ptr);
 
 /*
  * The verifier associates arenas with programs by checking LD.IMM
