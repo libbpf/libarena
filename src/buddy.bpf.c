@@ -550,8 +550,6 @@ static u8 idx_get_order(struct buddy_chunk __arena *chunk __arg_arena, u64 idx)
 
 static void __arena *idx_to_addr(struct buddy_chunk __arena *chunk __arg_arena, size_t idx)
 {
-	u64 address;
-
 	if (unlikely(idx >= BUDDY_CHUNK_ITEMS)) {
 		arena_stderr("translating invalid idx %u\n", idx);
 		return NULL;
@@ -566,15 +564,19 @@ static void __arena *idx_to_addr(struct buddy_chunk __arena *chunk __arg_arena, 
 	 * not need to offset it.
 	 */
 
-	address = (u64)chunk + (idx * BUDDY_MIN_ALLOC_BYTES);
-
-	return (void __arena *)address;
+	/*
+	 * Keep the base in the arena address space rather than round-tripping
+	 * it through a scalar; the cast-back form re-materializes the pointer
+	 * on every call, giving loop callers a fresh id each iteration and
+	 * stopping the verifier merging states.
+	 */
+	return (void __arena *)((u8 __arena *)chunk + idx * BUDDY_MIN_ALLOC_BYTES);
 }
 
 static struct buddy_header __arena *idx_to_header(struct buddy_chunk __arena *chunk __arg_arena, size_t idx)
 {
 	bool allocated;
-	u64 address;
+	u8 __arena *address;
 
 	if (unlikely(idx_is_allocated(chunk, idx, &allocated))) {
 		arena_stderr("accessing invalid idx 0x%lx\n", idx);
@@ -586,7 +588,7 @@ static struct buddy_header __arena *idx_to_header(struct buddy_chunk __arena *ch
 		return NULL;
 	}
 
-	address = (u64)idx_to_addr(chunk, idx);
+	address = idx_to_addr(chunk, idx);
 	if (!address)
 		return NULL;
 
