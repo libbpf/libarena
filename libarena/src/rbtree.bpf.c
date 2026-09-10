@@ -228,7 +228,7 @@ u64 rb_node_alloc_internal(u64 key, u64 value)
 	return (u64)rbnode;
 }
 
-__weak
+__weak __always_inline
 int rb_node_free(struct rbnode __arena *rbnode __arg_arena)
 {
 	arena_free(rbnode);
@@ -236,7 +236,7 @@ int rb_node_free(struct rbnode __arena *rbnode __arg_arena)
 	return 0;
 }
 
-static
+static __always_inline
 int rb_node_insert(struct rbtree __arena *rbtree __arg_arena,
 		   struct rbnode __arena *node __arg_arena)
 {
@@ -573,7 +573,7 @@ static inline bool rbnode_has_red_children(struct rbnode __arena *node)
 	return node->right && node->right->is_red;
 }
 
-static
+static __always_inline
 int rb_node_remove(struct rbtree __arena *rbtree __arg_arena,
 		   struct rbnode __arena *node __arg_arena)
 {
