@@ -95,7 +95,7 @@ static int init_arena(selftest *skel)
 
 	ret = libarena_run_prog_args(bpf_program__fd(skel->progs.arena_alloc_reserve),
 				    &args, sizeof(args));
-	if (ret)
+	if (ret && ret != -EOPNOTSUPP)
 		return ret;
 
 #ifdef BPF_ARENA_ASAN
