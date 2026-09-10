@@ -801,7 +801,7 @@ static __noinline int buddy_chunk_init(struct buddy_chunk __arena *chunk)
 		 * emit a diagnostic, unlock and exit.
 		 *
 		 */
-		if (unlikely(power2 >= BUDDY_CHUNK_NUM_ORDERS)) {
+		if (unlikely(power2 < 0 || power2 >= BUDDY_CHUNK_NUM_ORDERS)) {
 			arena_stderr(
 				"buddy chunk metadata require allocation of order %d\n",
 				power2);
