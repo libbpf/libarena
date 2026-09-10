@@ -23,5 +23,6 @@ int spmc_owned_add(struct spmc __arena *spmc, u64 val);
 int spmc_owned_remove(struct spmc __arena *spmc, u64 *val);
 int spmc_steal(struct spmc __arena *spmc, u64 *val);
 
-struct spmc __arena *spmc_create(void);
+u64 spmc_create_internal(void);
+#define spmc_create() ((struct spmc __arena *)spmc_create_internal())
 int spmc_destroy(struct spmc __arena *spmc);

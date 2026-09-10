@@ -184,7 +184,7 @@ int spmc_steal(struct spmc __arena *spmc, u64 *val)
 
 
 __weak
-struct spmc __arena *spmc_create(void)
+u64 spmc_create_internal(void)
 {
 	/*
 	 * Marked as volatile because otherwise the array
@@ -196,7 +196,7 @@ struct spmc __arena *spmc_create(void)
 
 	spmc = arena_malloc(sizeof(*spmc));
 	if (!spmc)
-		return NULL;
+		return 0;
 
 	spmc->bottom = 0;
 	spmc->top = 0;
@@ -209,12 +209,12 @@ struct spmc __arena *spmc_create(void)
 	ret = spmc_order_init((struct spmc __arena *)spmc, 0);
 	if (ret) {
 		arena_free(spmc);
-		return NULL;
+		return 0;
 	}
 
 	spmc->cur = &spmc->arr[0];
 
-	return (struct spmc __arena *)spmc;
+	return (u64)(struct spmc __arena *)spmc;
 }
 
 __weak

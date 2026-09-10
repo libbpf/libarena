@@ -1204,37 +1204,37 @@ done:
 }
 
 __weak
-void __arena *buddy_alloc(struct buddy __arena *buddy, size_t size)
+u64 buddy_alloc_internal(struct buddy __arena *buddy, size_t size)
 {
 	void __arena *address;
 	int order;
 
 	if (!buddy)
-		return NULL;
+		return 0;
 
 	order = size_to_order(size);
 	address = buddy_cache_alloc(buddy, size, order);
 	if (address)
-		return address;
+		return (u64)address;
 
-	return buddy_alloc_memory(buddy, size, order, 0, true);
+	return (u64)buddy_alloc_memory(buddy, size, order, 0, true);
 }
 
 __weak
-void __arena *buddy_alloc_nogrow(struct buddy __arena *buddy, size_t size)
+u64 buddy_alloc_nogrow_internal(struct buddy __arena *buddy, size_t size)
 {
 	void __arena *address;
 	int order;
 
 	if (!buddy)
-		return NULL;
+		return 0;
 
 	order = size_to_order(size);
 	address = buddy_cache_alloc(buddy, size, order);
 	if (address)
-		return address;
+		return (u64)address;
 
-	return buddy_alloc_memory(buddy, size, order, 0, false);
+	return (u64)buddy_alloc_memory(buddy, size, order, 0, false);
 }
 
 __weak
