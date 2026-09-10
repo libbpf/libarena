@@ -11,6 +11,10 @@
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 
+#ifndef bpf_prog_stream_read_opts__last_field
+#define BPF_NO_STREAMS
+#endif
+
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/sysinfo.h>
@@ -45,11 +49,15 @@ static int testno = 1;
 
 int selftest_run_prog(int prog_fd)
 {
+#ifndef BPF_NO_STREAMS
 	char buf[1024];
-	int ret, err;
+	int err;
+#endif
+	int ret;
 
 	ret = libarena_run_prog(prog_fd);
 
+#ifndef BPF_NO_STREAMS
 	if (verbose) {
 		printf("BPF stdout:\n");
 		while ((err = bpf_prog_stream_read(prog_fd, 1, buf, 1024, NULL)) > 0)
@@ -65,6 +73,7 @@ int selftest_run_prog(int prog_fd)
 		if (err)
 			return err;
 	}
+#endif
 
 	return ret;
 }

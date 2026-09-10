@@ -189,6 +189,9 @@ __weak int asan_report(s8 __arena *addr __arg_arena, size_t sz, u32 flags)
 			addr, (u64)addr,
 			(flags & ASAN_WRITE) ? "write" : "read",
 			sz);
+#ifndef BPF_NO_STREAMS
+	bpf_stream_print_stack(BPF_STDERR);
+#endif
 
 	return 0;
 }

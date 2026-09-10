@@ -15,6 +15,17 @@
 #error "Arena allocators require bpf_addr_space_cast feature"
 #endif
 
+#ifndef bpf_stream_printk
+static __always_inline int bpf_stream_printk(__u32 stream_id,
+					     const char *fmt, ...)
+{
+	(void)stream_id;
+	(void)fmt;
+	return 0;
+}
+#define BPF_NO_STREAMS
+#endif
+
 #define arena_stdout(fmt, ...) bpf_stream_printk(1, (fmt), ##__VA_ARGS__)
 #define arena_stderr(fmt, ...) bpf_stream_printk(2, (fmt), ##__VA_ARGS__)
 
