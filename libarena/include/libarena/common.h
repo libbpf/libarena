@@ -15,8 +15,27 @@
 #error "Arena allocators require bpf_addr_space_cast feature"
 #endif
 
-#define arena_stdout(fmt, ...) bpf_stream_printk(1, (fmt), ##__VA_ARGS__)
-#define arena_stderr(fmt, ...) bpf_stream_printk(2, (fmt), ##__VA_ARGS__)
+static __always_inline int printk_args_unused(const char *fmt, ...) { return 0; }
+
+/*
+ * BPF streams postdate the oldest kernels this branch supports. libbpf's
+ * bpf_stream_printk() calls the bpf_stream_vprintk() kfunc unconditionally,
+ * and the verifier rejects the whole program where it is absent:
+ *
+ *   ; arena_stderr("illegal size request %lu\n", size); @ buddy.bpf.c:337
+ *   190: <invalid kfunc call>
+ *   kfunc 'bpf_stream_vprintk' is referenced but wasn't resolved
+ *
+ * bpf_ksym_exists() does not help: it gates weak *variable* ksyms, while a
+ * weak kfunc call is still walked by the verifier, so the guard branch is
+ * optimized out and the call remains.
+ *
+ * Compile the prints out. Callers keep working, they just lose diagnostics,
+ * which those kernels could not deliver anyway. The arguments are still
+ * evaluated for their side effects and to keep -Wunused quiet.
+ */
+#define arena_stdout(fmt, ...) ((void)(0 && printk_args_unused(fmt, ##__VA_ARGS__)), 0)
+#define arena_stderr(fmt, ...) ((void)(0 && printk_args_unused(fmt, ##__VA_ARGS__)), 0)
 
 #ifndef __maybe_unused
 #define __maybe_unused __attribute__((__unused__))
