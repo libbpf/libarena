@@ -33,7 +33,8 @@ int spmc_arr_put(volatile struct spmc_arr __arena *spmc_arr __arg_arena, u64 ind
 	return 0;
 }
 
-static inline
+/* Keep the copy iterator out of the owner's stack frame. */
+static __noinline
 int spmc_arr_copy(volatile struct spmc_arr __arena *dst __arg_arena,
 		   volatile struct spmc_arr __arena *src __arg_arena, u64 b, u64 t)
 {
