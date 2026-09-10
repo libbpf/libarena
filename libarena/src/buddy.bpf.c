@@ -236,9 +236,13 @@ static void __arena *idx_to_addr(struct buddy_chunk __arena *chunk, size_t idx)
 	 * not need to offset it.
 	 */
 
-	address = (u64)chunk + (idx * BUDDY_MIN_ALLOC_BYTES);
-
-	return (void __arena *)address;
+	/*
+	 * Keep the base in the arena address space rather than round-tripping
+	 * it through a scalar; the cast-back form re-materializes the pointer
+	 * on every call, giving loop callers a fresh id each iteration and
+	 * stopping the verifier merging states.
+	 */
+	return (void __arena *)((u8 __arena *)chunk + idx * BUDDY_MIN_ALLOC_BYTES);
 }
 
 static struct buddy_header __arena *idx_to_header(struct buddy_chunk __arena *chunk, size_t idx)
