@@ -868,7 +868,7 @@ enum rb_print_state rb_print_next_state(struct rbnode __arena *rbnode __arg_aren
 }
 
 __weak
-int rb_print_pop_up(struct rbnode __arena **rbnodep __arg_arena, u8 *depthp, enum rb_print_state (*stack)[RB_MAXLVL_PRINT], enum rb_print_state *state)
+int rb_print_pop_up(struct rbnode __arena **rbnodep, u8 *depthp, enum rb_print_state (*stack)[RB_MAXLVL_PRINT], enum rb_print_state *state)
 {
 	struct rbnode __arena *rbnode;
 	volatile u8 depth;
