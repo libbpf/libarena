@@ -225,8 +225,6 @@ static u8 idx_get_order(struct buddy_chunk __arena *chunk, u64 idx)
 
 static void __arena *idx_to_addr(struct buddy_chunk __arena *chunk, size_t idx)
 {
-	u64 address;
-
 	if (unlikely(idx >= BUDDY_CHUNK_ITEMS)) {
 		arena_stderr("translating invalid idx %u\n", idx);
 		return NULL;
