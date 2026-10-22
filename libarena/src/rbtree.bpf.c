@@ -238,7 +238,8 @@ int rb_node_free(struct rbnode __arena *rbnode __arg_arena)
 
 static __always_inline
 int rb_node_insert(struct rbtree __arena *rbtree __arg_arena,
-		   struct rbnode __arena *node __arg_arena)
+		   struct rbnode __arena *node __arg_arena,
+		   enum rbtree_alloc alloc)
 {
 	struct rbnode __arena *grandparent, *parent = rbtree->root;
 	u64 key = node->key;
@@ -269,7 +270,7 @@ int rb_node_insert(struct rbtree __arena *rbtree __arg_arena,
 			if (ret)
 				return ret;
 
-			if (rbtree->alloc == RB_ALLOC)
+			if (alloc == RB_ALLOC)
 				rb_node_free(parent);
 
 			return 0;
@@ -360,7 +361,7 @@ int rb_insert_node(struct rbtree __arena *rbtree __arg_arena,
 	
 	node->is_red = true;
 
-	return rb_node_insert(rbtree, node);
+	return rb_node_insert(rbtree, node, RB_NOALLOC);
 }
 
 __weak
@@ -379,7 +380,7 @@ int rb_insert(struct rbtree __arena *rbtree __arg_arena, u64 key, u64 value)
 	if (!node)
 		return -ENOMEM;
 
-	ret = rb_node_insert(rbtree, node);
+	ret = rb_node_insert(rbtree, node, RB_ALLOC);
 	if (ret) {
 		rb_node_free(node);
 		return ret;
