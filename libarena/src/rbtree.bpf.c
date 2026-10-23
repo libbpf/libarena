@@ -906,6 +906,7 @@ int rb_print(struct rbtree __arena *rbtree __arg_arena)
 	struct rbnode __arena *rbnode = rbtree->root;
 	enum rb_print_state state;
 	struct rbnode __arena *next;
+	volatile u8 idx;
 	u64 next_addr;
 	u8 depth;
 	int ret;
@@ -935,7 +936,13 @@ int rb_print(struct rbtree __arena *rbtree __arg_arena)
 			if (depth < 0 || depth >= RB_MAXLVL_PRINT)
 				return 0;
 
-			stack[depth++] = state;
+			/* Clamp the value to ease verification. */
+			idx = depth & (RB_MAXLVL_PRINT - 1);
+			if (idx >= RB_MAXLVL_PRINT)
+				return 0;
+
+			stack[idx] = state;
+			depth++;
 
 			rbnode = next;
 			state = RB_NONE_VISITED;
@@ -968,6 +975,7 @@ int rb_integrity_check(struct rbtree __arena *rbtree __arg_arena)
 	struct rbnode __arena *rbnode = rbtree->root;
 	enum rb_print_state state;
 	struct rbnode __arena *next;
+	volatile u8 idx;
 	u64 next_addr;
 	u8 depth;
 	int ret;
@@ -1027,7 +1035,12 @@ int rb_integrity_check(struct rbtree __arena *rbtree __arg_arena)
 			if (depth < 0 || depth >= RB_MAXLVL_PRINT)
 				return 0;
 
-			stack[depth++] = state;
+			idx = depth & (RB_MAXLVL_PRINT - 1);
+			if (idx >= RB_MAXLVL_PRINT)
+				return 0;
+
+			stack[idx] = state;
+			depth++;
 
 			rbnode = next;
 			state = RB_NONE_VISITED;
