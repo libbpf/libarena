@@ -66,8 +66,9 @@ override BPF_CFLAGS += $(INCLUDES)
 CFLAGS = -O2 -no-pie
 CFLAGS += $(INCLUDES) -I$(CURDIR)
 
-SELFTEST_SOURCES := $(LIBARENA)/selftests/selftests.c
-SELFTEST_HEADERS := $(wildcard $(LIBARENA)/include/libarena/*.h)
+SELFTEST_SOURCES := $(LIBARENA)/selftests/selftests.c $(LIBARENA)/selftests/parallel.c
+SELFTEST_HEADERS := $(LIBARENA)/selftests/parallel.h \
+		    $(wildcard $(LIBARENA)/include/libarena/*.h)
 
 vpath %.bpf.c $(LIBARENA)/src $(LIBARENA)/selftests $(LIBARENA)/benchs
 vpath %.c $(LIBARENA)/src $(LIBARENA)/selftests $(LIBARENA)/benchs
