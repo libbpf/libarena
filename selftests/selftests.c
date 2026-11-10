@@ -20,6 +20,7 @@
 #include <libarena/buddy.h>
 #include <libarena/userspace.h>
 
+#include "parallel.h"
 
 #ifdef BPF_ARENA_ASAN
 #include "libarena_asan.skel.h"
@@ -42,7 +43,7 @@ typedef struct libarena selftest;
 static bool verbose;
 static int testno = 1;
 
-static int selftest_run_prog(int prog_fd)
+int selftest_run_prog(int prog_fd)
 {
 	char buf[1024];
 	int ret, err;
@@ -180,20 +181,34 @@ int main(int argc, char *argv[])
 
 	bpf_object__for_each_program(prog, skel->obj) {
 		const char *name = bpf_program__name(prog);
+		bool skipped = false;
+		size_t namelen = strlen(name);
+		int printlen = namelen;
 
-		if (!libarena_is_test_prog(name)
+		if (libarena_is_parallel_test_prog(name)) {
+			/* Each group is run once, when its __init program is found. */
+			if (namelen < strlen("__init") ||
+			    strcmp(name + namelen - strlen("__init"), "__init"))
+				continue;
+			printlen -= strlen("__init");
+			ret = selftest_run_parallel(skel->obj, prog, &skipped);
+		} else {
+			if (!libarena_is_test_prog(name)
 #ifdef BPF_ARENA_ASAN
-		    && !libarena_is_asan_test_prog(name)
+			    && !libarena_is_asan_test_prog(name)
 #endif
-		   )
-			continue;
+			   )
+				continue;
 
-		ret = run_test(skel, prog);
+			ret = run_test(skel, prog);
+		}
 
-		if (ret)
-			printf("not ok %d - %s (error %d)\n", testno++, name, ret);
+		if (skipped)
+			printf("ok %d - %.*s # SKIP unsupported\n", testno++, printlen, name);
+		else if (ret)
+			printf("not ok %d - %.*s (error %d)\n", testno++, printlen, name, ret);
 		else
-			printf("ok %d - %s\n", testno++, name);
+			printf("ok %d - %.*s\n", testno++, printlen, name);
 
 		if (ret)
 			err = -EINVAL;
