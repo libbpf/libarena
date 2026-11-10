@@ -1,0 +1,110 @@
+# SPDX-License-Identifier: LGPL-2.1 OR BSD-2-Clause
+# Copyright (c) 2026 Meta Platforms, Inc. and affiliates.
+
+name: Selftests
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: selftests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -eo pipefail {0}
+
+jobs:
+  selftests:
+    name: All selftests on ${{ matrix.kernel }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel: ['6.16', '7.1', bpf-next]
+    env:
+      ASAN: '1'
+      REQUIRE_ALL_SELFTESTS: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install LLVM 22 and bpftool
+        run: |
+          sudo bash .github/vmtest/install-deps.sh /opt/libarena-ci
+          echo /opt/libarena-ci/bin >> "$GITHUB_PATH"
+          echo "LIBARENA_TEST_CACHE=$RUNNER_TEMP/libarena-ci" >> "$GITHUB_ENV"
+
+      - name: Resolve the kernel snapshot
+        id: kernel
+        env:
+          KERNEL: ${{ matrix.kernel }}
+        run: bash .github/vmtest/kernel-ref.sh "$KERNEL" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch the kernel snapshot
+        env:
+          KERNEL_REPOSITORY: ${{ steps.kernel.outputs.repository }}
+          KERNEL_REVISION: ${{ steps.kernel.outputs.revision }}
+        run: |
+          git init -q "$RUNNER_TEMP/linux"
+          git -C "$RUNNER_TEMP/linux" fetch --depth 1 "$KERNEL_REPOSITORY" "$KERNEL_REVISION"
+          git -C "$RUNNER_TEMP/linux" checkout --detach FETCH_HEAD
+          mkdir -p "$LIBARENA_TEST_CACHE"
+          git -C "$RUNNER_TEMP/linux" rev-parse HEAD > "$LIBARENA_TEST_CACHE/kernel-commit.txt"
+          git -C vendor/libbpf rev-parse HEAD > "$LIBARENA_TEST_CACHE/libbpf-commit.txt"
+
+      - name: Cache the kernel build
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/libarena-ci/kernel
+          key: libarena-kernel-x86_64-${{ steps.kernel.outputs.revision }}-${{ hashFiles('test.sh', '.github/vmtest/install-deps.sh') }}
+
+      - name: Cache the VM image
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/libarena-ci/vmtest/root.img
+          key: libarena-rootfs-x86_64-v1
+
+      - name: Enable KVM access
+        run: sudo chmod 666 /dev/kvm
+
+      - name: Build and run every selftest
+        run: |
+          timeout --kill-after=1m 130m bash ./test.sh "$RUNNER_TEMP/linux" -- --verbose \
+            2>&1 | tee "$LIBARENA_TEST_CACHE/console.log"
+          grep -qx 'libarena-ci: exit 0' "$LIBARENA_TEST_CACHE"/vmtest/*.log
+
+      - name: Upload test logs and inventories
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: selftests-${{ matrix.kernel }}
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/libarena-ci/console.log
+            ${{ runner.temp }}/libarena-ci/vmtest/*.log
+            ${{ runner.temp }}/libarena-ci/vmtest/*.exit_status
+            ${{ runner.temp }}/libarena-ci/vmtest/latest.config
+            ${{ runner.temp }}/libarena-ci/*-commit.txt
+            ${{ runner.temp }}/libarena-ci/selftests/*.tests
+
+  all-selftests:
+    name: All selftests passed
+    needs: selftests
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require all three kernels to pass
+        env:
+          RESULT: ${{ needs.selftests.result }}
+        run: test "$RESULT" = success
