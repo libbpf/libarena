@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: LGPL-2.1 OR BSD-2-Clause
 /* Copyright (c) 2026 Meta Platforms, Inc. and affiliates. */
-#include <limits.h>
-
 #include <libarena/common.h>
 #include <libarena/asan.h>
 #include <libarena/buddy.h>
@@ -69,7 +67,7 @@ __weak void __arena *arena_calloc(size_t ncount, size_t size)
 	 * overflow check, but any costs are dwarfed by the
 	 * buddy_alloc() call. Keep it simple for now.
 	 */
-	if (unlikely(ncount && size >= ULLONG_MAX / ncount))
+	if (unlikely(ncount && size >= __UINT64_MAX__ / ncount))
 		return NULL;
 
 	total = ncount * size;
