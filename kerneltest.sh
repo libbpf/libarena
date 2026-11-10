@@ -35,10 +35,15 @@ selftest_args=("$@")
 
 VMTEST="$LINUXDIR/tools/testing/selftests/bpf/vmtest.sh"
 KERNEL_SELFTESTS="$LINUXDIR/tools/testing/selftests/bpf"
-BPFTOOL="$KERNEL_SELFTESTS/tools/sbin/bpftool"
-LIBBPF_INCLUDE="$KERNEL_SELFTESTS/tools/include"
-BPFOBJ="$KERNEL_SELFTESTS/tools/build/libbpf/libbpf.a"
 KERNEL_BUILD_DIR=${O:-${KBUILD_OUTPUT:-$LINUXDIR}}
+if [[ -n ${O:-} ]]; then
+	KERNEL_SELFTEST_OUTPUT=$KERNEL_BUILD_DIR
+else
+	KERNEL_SELFTEST_OUTPUT=$KERNEL_SELFTESTS
+fi
+BPFTOOL="$KERNEL_SELFTEST_OUTPUT/tools/sbin/bpftool"
+LIBBPF_INCLUDE="$KERNEL_SELFTEST_OUTPUT/tools/include"
+BPFOBJ="$KERNEL_SELFTEST_OUTPUT/tools/build/libbpf/libbpf.a"
 
 # Generic scratch space
 WORK_DIR=$(mktemp -d)
