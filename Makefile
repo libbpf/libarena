@@ -17,7 +17,7 @@ Q ?= @
 msg = @printf '  %-8s%s %s%s\n' "$(1)" "$(if $(2), [$(2)])" "$(notdir $(3))" "$(if $(4), $(4))";
 endif
 
-IS_LITTLE_ENDIAN = $(shell $(CC) -dM -E - </dev/null | \
+IS_LITTLE_ENDIAN = $(shell $(CLANG) -dM -E - </dev/null | \
 			grep 'define __BYTE_ORDER__ __ORDER_LITTLE_ENDIAN__')
 BPF_TARGET_ENDIAN ?= $(if $(IS_LITTLE_ENDIAN),--target=bpfel,--target=bpfeb)
 
@@ -78,11 +78,11 @@ selftests: test_libarena
 
 test_libarena: $(SELFTEST_SOURCES) $(SELFTEST_HEADERS) $(BPFOBJ) libarena.skel.h
 	$(call msg,BINARY,libarena,$@)
-	$(Q)$(CLANG) $(CFLAGS) $(SELFTEST_SOURCES) $(BPFOBJ) $(LDLIBS) -o $@
+	$(Q)$(CLANG) $(CFLAGS) $(EXTRA_CFLAGS) $(SELFTEST_SOURCES) $(BPFOBJ) $(LDLIBS) -o $@
 
 test_libarena_asan: $(SELFTEST_SOURCES) $(SELFTEST_HEADERS) $(BPFOBJ) libarena_asan.skel.h
 	$(call msg,BINARY,libarena,$@)
-	$(Q)$(CLANG) $(CFLAGS) -DBPF_ARENA_ASAN $(SELFTEST_SOURCES) $(BPFOBJ) $(LDLIBS) -o $@
+	$(Q)$(CLANG) $(CFLAGS) $(EXTRA_CFLAGS) -DBPF_ARENA_ASAN $(SELFTEST_SOURCES) $(BPFOBJ) $(LDLIBS) -o $@
 
 skeletons: libarena.skel.h libarena_asan.skel.h
 .PHONY: skeletons
@@ -116,11 +116,11 @@ libarena_bench.bpf.o: $(LIBARENA_BENCH_OBJECTS)
 
 %_asan.bpf.o: %.bpf.c
 	$(call msg,CLNG-BPF,libarena,$@)
-	$(Q)$(CLANG) $(BPF_CFLAGS) $(ASAN_FLAGS) -DBPF_ARENA_ASAN $(BPF_TARGET_ENDIAN) -c $< -o $@
+	$(Q)$(CLANG) $(BPF_CFLAGS) $(EXTRA_CFLAGS) $(ASAN_FLAGS) -DBPF_ARENA_ASAN $(BPF_TARGET_ENDIAN) -c $< -o $@
 
 %.bpf.o: %.bpf.c
 	$(call msg,CLNG-BPF,libarena,$@)
-	$(Q)$(CLANG) $(BPF_CFLAGS) $(BPF_TARGET_ENDIAN) -c $< -o $@
+	$(Q)$(CLANG) $(BPF_CFLAGS) $(EXTRA_CFLAGS) $(BPF_TARGET_ENDIAN) -c $< -o $@
 
 clean:
 	$(Q)rm -f *.skel.h *.bpf.o *.linked*.o test_libarena test_libarena_asan
