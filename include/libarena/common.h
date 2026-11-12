@@ -98,7 +98,7 @@ int arena_free(void __arena *ptr);
  * backend to exit due to a missing implementation. Provide
  * implementations for the intrinsic.
  */
-static inline int arena_memset(s8 __arena *dst, s8 val, size_t size)
+static __always_inline int arena_memset(s8 __arena *dst, s8 val, size_t size)
 {
 	size_t headalign;
 	size_t tailalign;
