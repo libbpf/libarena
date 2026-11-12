@@ -37,21 +37,21 @@ TMP_DIR=$(mktemp -d)
 
 trap "cd ${WORKDIR}; exit" INT TERM EXIT
 
+LIBARENA_KERNEL_PATH=tools/testing/selftests/bpf/libarena
+
 declare -A PATH_MAP
 PATH_MAP=( \
-	[tools/testing/selftests/bpf/libarena]=libarena	\
-	[tools/testing/selftests/bpf/bpf_experimental.h]=libarena/include/bpf_experimental.h \
-	[tools/testing/selftests/bpf/bpf_rand.h]=libarena/include/bpf_rand.h \
-	[tools/testing/selftests/bpf/bpf_sockopt_helpers.h]=libarena/include/bpf_sockopt_helpers.h \
-	[tools/testing/selftests/bpf/bpf_util.h]=libarena/include/bpf_util.h \
+	[tools/testing/selftests/bpf/bpf_experimental.h]=include/bpf_experimental.h \
+	[tools/testing/selftests/bpf/bpf_rand.h]=include/bpf_rand.h \
+	[tools/testing/selftests/bpf/bpf_sockopt_helpers.h]=include/bpf_sockopt_helpers.h \
+	[tools/testing/selftests/bpf/bpf_util.h]=include/bpf_util.h \
 )
 
-LIBARENA_PATHS=("${!PATH_MAP[@]}")
-LIBARENA_VIEW_PATHS=("${PATH_MAP[@]}")
+LIBARENA_PATHS=("${LIBARENA_KERNEL_PATH}" "${!PATH_MAP[@]}")
 
-LIBARENA_TREE_FILTER="mkdir __libarena/ && "$'\\\n'
+LIBARENA_TREE_FILTER="mkdir -p __libarena/include && cp -a ${LIBARENA_KERNEL_PATH}/. __libarena/ && "$'\\\n'
 for p in "${!PATH_MAP[@]}"; do
-	LIBARENA_TREE_FILTER+="git mv -kf ${p} __libarena/${PATH_MAP[${p}]} && "$'\\\n'
+	LIBARENA_TREE_FILTER+="cp -a ${p} __libarena/${PATH_MAP[${p}]} && "$'\\\n'
 done
 LIBARENA_TREE_FILTER+="true"
 
@@ -309,13 +309,9 @@ cd_workdir ${LINUX_REPO}
 git checkout -b ${VIEW_TAG} ${TIP_COMMIT}
 FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f --tree-filter "${LIBARENA_TREE_FILTER}" ${VIEW_TAG}^..${VIEW_TAG}
 FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f --subdirectory-filter __libarena ${VIEW_TAG}^..${VIEW_TAG}
-git ls-files -- "${LIBARENA_VIEW_PATHS[@]}" > ${TMP_DIR}/linux-view.ls
+git ls-files > ${TMP_DIR}/linux-view.ls
 
 cd_workdir ${LIBARENA_REPO}
-git ls-files -- "${LIBARENA_VIEW_PATHS[@]}" > ${TMP_DIR}/standalone-view.ls
-
-echo "Comparing list of files..."
-diff -u ${TMP_DIR}/linux-view.ls ${TMP_DIR}/standalone-view.ls
 echo "Comparing file contents..."
 CONSISTENT=1
 for F in $(cat ${TMP_DIR}/linux-view.ls); do

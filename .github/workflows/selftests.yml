@@ -1,0 +1,144 @@
+# SPDX-License-Identifier: LGPL-2.1 OR BSD-2-Clause
+# Copyright (c) 2026 Meta Platforms, Inc. and affiliates.
+
+name: Selftests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: selftests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -eo pipefail {0}
+
+jobs:
+  pahole:
+    name: Prepare pahole
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Cache pahole
+        id: pahole-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/pahole.tar.gz
+          key: pahole-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/vmtest/build-pahole.sh') }}-v1
+
+      - name: Build pahole
+        if: steps.pahole-cache.outputs.cache-hit != 'true'
+        run: sudo bash .github/vmtest/build-pahole.sh "$RUNNER_TEMP/pahole.tar.gz"
+
+      - name: Upload pahole
+        uses: actions/upload-artifact@v4
+        with:
+          name: pahole-${{ runner.os }}-${{ runner.arch }}
+          path: ${{ runner.temp }}/pahole.tar.gz
+          if-no-files-found: error
+
+  selftests:
+    name: All selftests on ${{ matrix.kernel }}
+    needs: pahole
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel: ['6.16', '7.1', bpf-next]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install LLVM 22
+        run: |
+          sudo bash .github/vmtest/install-deps.sh
+          echo /usr/lib/llvm-22/bin >> "$GITHUB_PATH"
+
+      - name: Download pahole
+        uses: actions/download-artifact@v4
+        with:
+          name: pahole-${{ runner.os }}-${{ runner.arch }}
+          path: ${{ runner.temp }}/pahole
+
+      - name: Install pahole
+        run: sudo bash .github/vmtest/install-pahole.sh "$RUNNER_TEMP/pahole/pahole.tar.gz"
+
+      - name: Resolve the kernel snapshot
+        id: kernel
+        env:
+          KERNEL: ${{ matrix.kernel }}
+        run: bash .github/vmtest/kernel-ref.sh "$KERNEL" >> "$GITHUB_OUTPUT"
+
+      - name: Cache VM root image
+        uses: actions/cache@v4
+        with:
+          path: ~/.bpf_selftests/root.img
+          key: vmtest-rootfs-${{ runner.os }}-${{ runner.arch }}-v1
+
+      - name: Cache kernel build
+        if: matrix.kernel != 'bpf-next'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/kernel-build
+          key: kernel-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.kernel.outputs.revision }}-v1
+
+      - name: Fetch the kernel snapshot
+        env:
+          KERNEL_REPOSITORY: ${{ steps.kernel.outputs.repository }}
+          KERNEL_REVISION: ${{ steps.kernel.outputs.revision }}
+        run: |
+          git init -q "$RUNNER_TEMP/linux"
+          git -C "$RUNNER_TEMP/linux" fetch --depth 1 "$KERNEL_REPOSITORY" "$KERNEL_REVISION"
+          git -C "$RUNNER_TEMP/linux" checkout --detach FETCH_HEAD
+          mkdir -p "$RUNNER_TEMP/libarena-ci"
+          git -C "$RUNNER_TEMP/linux" rev-parse HEAD > "$RUNNER_TEMP/libarena-ci/kernel-commit.txt"
+          git -C vendor/libbpf rev-parse HEAD > "$RUNNER_TEMP/libarena-ci/libbpf-commit.txt"
+
+      - name: Enable KVM access
+        run: sudo chmod 666 /dev/kvm
+
+      - name: Build and run every selftest
+        env:
+          O: ${{ runner.temp }}/kernel-build
+        run: |
+          timeout --kill-after=1m 130m bash ./kerneltest.sh "$RUNNER_TEMP/linux" -- --verbose \
+            2>&1 | tee "$RUNNER_TEMP/libarena-ci/console.log"
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: selftests-${{ matrix.kernel }}
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/libarena-ci/console.log
+            ~/.bpf_selftests/*.log
+            ~/.bpf_selftests/*.exit_status
+            ~/.bpf_selftests/latest.config
+            ${{ runner.temp }}/libarena-ci/*-commit.txt
+
+  all-selftests:
+    name: All selftests passed
+    needs: selftests
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require all three kernels to pass
+        env:
+          RESULT: ${{ needs.selftests.result }}
+        run: test "$RESULT" = success
