@@ -15,10 +15,10 @@ struct arena_bitmap {
 	u64 bits[0];
 };
 
-u64 bmp_alloc_internal(size_t bits);
-#define bmp_alloc(bits) \
-	((struct arena_bitmap __arena *)bmp_alloc_internal((bits)))
-int bmp_free(struct arena_bitmap __arena *bmp);
+static __always_inline int bmp_free(struct arena_bitmap __arena *bmp)
+{
+	return arena_free(bmp);
+}
 
 int bmp_set_bit(u32 bit, struct arena_bitmap __arena *bmp);
 int bmp_clear_bit(u32 bit, struct arena_bitmap __arena *bmp);
@@ -30,6 +30,23 @@ int bmp_and(size_t bits, struct arena_bitmap __arena *dst, struct arena_bitmap _
 int bmp_or(size_t bits, struct arena_bitmap __arena *dst, struct arena_bitmap __arena *src1, struct arena_bitmap __arena *src2);
 bool bmp_empty(size_t bits, struct arena_bitmap __arena *bmp);
 int bmp_copy(size_t bits, struct arena_bitmap __arena *dst, struct arena_bitmap __arena *src);
+
+static __always_inline struct arena_bitmap __arena *bmp_alloc(size_t bits)
+{
+	struct arena_bitmap __arena *bmp;
+	size_t size = BITS_TO_LONG_LONGS(bits) * sizeof(bmp->bits[0]);
+
+	if (bits % BITS_PER_LONG_LONG)
+		return 0;
+
+	bmp = arena_malloc(size);
+	if (!bmp)
+		return 0;
+
+	bmp_clear(bits, bmp);
+
+	return bmp;
+}
 
 bool bmp_intersects(size_t bits, struct arena_bitmap __arena *arg1, struct arena_bitmap __arena *arg2);
 bool bmp_subset(size_t bits, struct arena_bitmap __arena *big, struct arena_bitmap __arena *small);

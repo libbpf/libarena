@@ -550,7 +550,7 @@ static int spmc_wait_for_round_steals(u64 target)
 	return -ETIMEDOUT;
 }
 
-__weak int
+static __always_inline int
 spmc_burst_owner_round(u64 round)
 {
 	u64 i, base, stolen, expected, val;

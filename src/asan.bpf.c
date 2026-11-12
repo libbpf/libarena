@@ -175,7 +175,7 @@ static __always_inline bool memory_is_poisoned_n(s8 __arena *addr, u64 size)
 	return unlikely(ret != end || ASAN_GRANULE(addr + size - 1) >= *(s8 __arena *)end);
 }
 
-__weak int asan_report(s8 __arena *addr __arg_arena, size_t sz, u32 flags)
+static __always_inline int asan_report(s8 __arena *addr, size_t sz, u32 flags)
 {
 	u32 reported = __sync_val_compare_and_swap(&asan_reported, false, true);
 

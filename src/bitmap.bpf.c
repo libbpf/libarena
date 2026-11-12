@@ -10,33 +10,6 @@
 #include <libarena/bitmap.h>
 
 __weak
-u64 bmp_alloc_internal(size_t bits)
-{
-	struct arena_bitmap __arena *bmp;
-	size_t size = BITS_TO_LONG_LONGS(bits) * sizeof(bmp->bits[0]);
-
-	/* Assume long-aligned masks. */
-	if (bits % BITS_PER_LONG_LONG)
-		return 0;
-
-	bmp = (struct arena_bitmap __arena *)arena_malloc(size);
-	if (!bmp)
-		return 0;
-
-	bmp_clear(bits, bmp);
-
-	return (u64)bmp;
-}
-
-__weak
-int bmp_free(struct arena_bitmap __arena *bmp __arg_arena)
-{
-	arena_free(bmp);
-
-	return 0;
-}
-
-__weak
 bool bmp_test_and_clear_bit(u32 bit, struct arena_bitmap __arena *bmp __arg_arena)
 {
 	u64 val = BIT_MASK(bit);
