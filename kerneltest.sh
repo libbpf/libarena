@@ -33,7 +33,6 @@ selftest_args=("$@")
 
 ## Identifying working and source directories
 
-VMTEST="$LINUXDIR/tools/testing/selftests/bpf/vmtest.sh"
 KERNEL_SELFTESTS="$LINUXDIR/tools/testing/selftests/bpf"
 KERNEL_BUILD_DIR=${O:-${KBUILD_OUTPUT:-$LINUXDIR}}
 if [[ -n ${O:-} ]]; then
@@ -62,12 +61,23 @@ cleanup()
 trap cleanup EXIT
 mkdir -p "$BUILD_DIR" "$HEADER_DIR"
 
+# Hack to avoid having to build the kernel selftests. Write a Makefile
+# fragment that overrides the target in the kernel selftests Makefile,
+# and only builds libbpf/bpftool instead of all the selftests. Extra
+# important when using Clang 23, because some of them fail to compile.
+MKOVERRIDE="$WORK_DIR"/override.mk
+VMTEST=(env MAKEFILES="$MKOVERRIDE" "$KERNEL_SELFTESTS/vmtest.sh")
+
+printf '%s\n' 'ifneq ($(filter %/tools/testing/selftests/bpf,$(CURDIR)),)' \
+	'override TRUNNER_TEST_OBJS :=' '.DEFAULT_GOAL = $(DEFAULT_BPFTOOL)' \
+	'endif' > "$MKOVERRIDE"
+
 ## Generating vmlinux.h
 
 # Trigger a kernel build. "-- true" is a dummy cmdline because
 # vmtest.sh always runs the compiled kernel after building and
 # the default is ./test_progs that we don't care about.
-"$VMTEST" -- true
+"${VMTEST[@]}" -- true
 
 "$BPFTOOL" btf dump file "$KERNEL_BUILD_DIR/vmlinux" format c > "$HEADER_DIR/vmlinux.h"
 
@@ -90,5 +100,5 @@ cp "$BUILD_DIR/test_libarena" "$BUILD_DIR/test_libarena_asan" \
 	"$LIBARENA_ROOT/selftests/run-selftests.sh" "$STAGE_DIR"
 
 guest_stage="./$(basename "$STAGE_DIR")"
-"$VMTEST" -- \
+"${VMTEST[@]}" -- \
 	bash "$guest_stage/run-selftests.sh" "${selftest_args[@]}"
