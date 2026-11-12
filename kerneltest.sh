@@ -30,6 +30,10 @@ if [[ ${1:-} == -- ]]; then
 	shift
 fi
 selftest_args=("$@")
+test_targets=(selftests)
+if [[ ${ASAN:-1} == 1 ]]; then
+	test_targets+=(test_libarena_asan)
+fi
 
 ## Identifying working and source directories
 
@@ -91,12 +95,12 @@ make -B -C "$BUILD_DIR" -f "$LIBARENA_ROOT/Makefile" -j "$(nproc)" \
 	LDLIBS="-lelf -lz -lrt -lpthread -lzstd" \
 	BPF_CFLAGS="${BPF_CFLAGS:-} -D__TARGET_ARCH_$target_arch" \
 	EXTRA_CFLAGS=-Werror \
-	selftests test_libarena_asan
+	"${test_targets[@]}"
 
 # vmtest copies this tree into the guest. Use a temporary hidden directory so
 # the kernel checkout is restored after the run.
 STAGE_DIR=$(mktemp -d "$KERNEL_SELFTESTS/.libarena-standalone.XXXXXX")
-cp "$BUILD_DIR/test_libarena" "$BUILD_DIR/test_libarena_asan" \
+cp "$BUILD_DIR"/test_libarena* \
 	"$LIBARENA_ROOT/selftests/run-selftests.sh" "$STAGE_DIR"
 
 guest_stage="./$(basename "$STAGE_DIR")"
