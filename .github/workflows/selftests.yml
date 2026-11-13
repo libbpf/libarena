@@ -22,6 +22,12 @@ defaults:
   run:
     shell: bash --noprofile --norc -eo pipefail {0}
 
+env:
+  KBUILD_BUILD_USER: libarena
+  KBUILD_BUILD_HOST: github-actions
+  # Shared bpftool needs no LLVM disassembler library.
+  LLVM_CONFIG: /bin/false
+
 jobs:
   pahole:
     name: Prepare pahole
@@ -49,11 +55,10 @@ jobs:
           path: ${{ runner.temp }}/pahole.tar.gz
           if-no-files-found: error
 
-  selftests:
-    name: All selftests on ${{ matrix.kernel }}
+  kernels:
+    name: Prepare kernel ${{ matrix.kernel }}
     needs: pahole
     runs-on: ubuntu-24.04
-    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
@@ -62,12 +67,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-          submodules: recursive
 
-      - name: Install LLVM 22
-        run: |
-          sudo bash .github/vmtest/install-deps.sh
-          echo /usr/lib/llvm-22/bin >> "$GITHUB_PATH"
+      - name: Install kernel build dependencies
+        run: sudo bash .github/vmtest/install-deps.sh
 
       - name: Download pahole
         uses: actions/download-artifact@v4
@@ -91,29 +93,107 @@ jobs:
           key: vmtest-rootfs-${{ runner.os }}-${{ runner.arch }}-v1
 
       - name: Cache kernel build
-        if: matrix.kernel != 'bpf-next'
+        id: kernel-cache
         uses: actions/cache@v4
         with:
-          path: ${{ runner.temp }}/kernel-build
-          key: kernel-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.kernel.outputs.revision }}-v1
+          path: ${{ runner.temp }}/kernel.tar.zst
+          key: kernel-build-${{ steps.kernel.outputs.revision }}
 
-      - name: Fetch the kernel snapshot
+      - name: Enable KVM access
+        run: sudo chmod 666 /dev/kvm
+
+      - name: Build the kernel and its tools
+        if: steps.kernel-cache.outputs.cache-hit != 'true'
         env:
+          # Optional bpftool BPF features are unnecessary for these tests.
+          CLANG: /bin/false
+          O: ${{ runner.temp }}/kernel-build
           KERNEL_REPOSITORY: ${{ steps.kernel.outputs.repository }}
           KERNEL_REVISION: ${{ steps.kernel.outputs.revision }}
         run: |
-          git init -q "$RUNNER_TEMP/linux"
-          git -C "$RUNNER_TEMP/linux" fetch --depth 1 "$KERNEL_REPOSITORY" "$KERNEL_REVISION"
-          git -C "$RUNNER_TEMP/linux" checkout --detach FETCH_HEAD
-          mkdir -p "$RUNNER_TEMP/libarena-ci"
+          bash .github/vmtest/build-kernel.sh \
+            2>&1 | tee "$RUNNER_TEMP/kernel-build.log"
+
+      - name: Upload the kernel build
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ matrix.kernel }}
+          path: ${{ runner.temp }}/kernel.tar.zst
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Upload kernel build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-build-${{ matrix.kernel }}
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/kernel-build.log
+            ~/.bpf_selftests/*.log
+            ~/.bpf_selftests/*.exit_status
+            ~/.bpf_selftests/latest.config
+
+  selftests:
+    name: All selftests on ${{ matrix.kernel }} / Clang ${{ matrix.clang }}
+    needs: [pahole, kernels]
+    if: ${{ !cancelled() && needs.pahole.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel: ['6.16', '7.1', bpf-next]
+        clang: [21, 22, 23]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install LLVM ${{ matrix.clang }}
+        env:
+          CLANG_VERSION: ${{ matrix.clang }}
+        run: |
+          sudo bash .github/vmtest/install-deps.sh "$CLANG_VERSION"
+          echo "/usr/lib/llvm-$CLANG_VERSION/bin" >> "$GITHUB_PATH"
+
+      - name: Download pahole
+        uses: actions/download-artifact@v4
+        with:
+          name: pahole-${{ runner.os }}-${{ runner.arch }}
+          path: ${{ runner.temp }}/pahole
+
+      - name: Install pahole
+        run: sudo bash .github/vmtest/install-pahole.sh "$RUNNER_TEMP/pahole/pahole.tar.gz"
+
+      - name: Download the kernel build
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-${{ matrix.kernel }}
+          path: ${{ runner.temp }}
+
+      - name: Restore the kernel build
+        run: |
+          tar --zstd -xf "$RUNNER_TEMP/kernel.tar.zst" -C "$RUNNER_TEMP"
+          mkdir -p "$HOME/.bpf_selftests" "$RUNNER_TEMP/libarena-ci"
+          mv "$RUNNER_TEMP/latest.config" "$HOME/.bpf_selftests/latest.config"
           git -C "$RUNNER_TEMP/linux" rev-parse HEAD > "$RUNNER_TEMP/libarena-ci/kernel-commit.txt"
           git -C vendor/libbpf rev-parse HEAD > "$RUNNER_TEMP/libarena-ci/libbpf-commit.txt"
+          clang --version | tee "$RUNNER_TEMP/libarena-ci/compiler.txt"
+
+      - name: Cache VM root image
+        uses: actions/cache@v4
+        with:
+          path: ~/.bpf_selftests/root.img
+          key: vmtest-rootfs-${{ runner.os }}-${{ runner.arch }}-v1
 
       - name: Enable KVM access
         run: sudo chmod 666 /dev/kvm
 
       - name: Build and run every selftest
         env:
+          ASAN: ${{ matrix.clang == 23 && '1' || '0' }}
           O: ${{ runner.temp }}/kernel-build
         run: |
           timeout --kill-after=1m 130m bash ./kerneltest.sh "$RUNNER_TEMP/linux" -- --verbose \
@@ -123,7 +203,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: selftests-${{ matrix.kernel }}
+          name: selftests-${{ matrix.kernel }}-clang${{ matrix.clang }}
           if-no-files-found: warn
           path: |
             ${{ runner.temp }}/libarena-ci/console.log
@@ -131,6 +211,7 @@ jobs:
             ~/.bpf_selftests/*.exit_status
             ~/.bpf_selftests/latest.config
             ${{ runner.temp }}/libarena-ci/*-commit.txt
+            ${{ runner.temp }}/libarena-ci/compiler.txt
 
   all-selftests:
     name: All selftests passed

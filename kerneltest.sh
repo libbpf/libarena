@@ -30,10 +30,13 @@ if [[ ${1:-} == -- ]]; then
 	shift
 fi
 selftest_args=("$@")
+test_targets=(selftests)
+if [[ ${ASAN:-1} == 1 ]]; then
+	test_targets+=(test_libarena_asan)
+fi
 
 ## Identifying working and source directories
 
-VMTEST="$LINUXDIR/tools/testing/selftests/bpf/vmtest.sh"
 KERNEL_SELFTESTS="$LINUXDIR/tools/testing/selftests/bpf"
 KERNEL_BUILD_DIR=${O:-${KBUILD_OUTPUT:-$LINUXDIR}}
 if [[ -n ${O:-} ]]; then
@@ -62,12 +65,23 @@ cleanup()
 trap cleanup EXIT
 mkdir -p "$BUILD_DIR" "$HEADER_DIR"
 
+# Hack to avoid having to build the kernel selftests. Write a Makefile
+# fragment that overrides the target in the kernel selftests Makefile,
+# and only builds libbpf/bpftool instead of all the selftests. Extra
+# important when using Clang 23, because some of them fail to compile.
+MKOVERRIDE="$WORK_DIR"/override.mk
+VMTEST=(env MAKEFILES="$MKOVERRIDE" "$KERNEL_SELFTESTS/vmtest.sh")
+
+printf '%s\n' 'ifneq ($(filter %/tools/testing/selftests/bpf,$(CURDIR)),)' \
+	'override TRUNNER_TEST_OBJS :=' '.DEFAULT_GOAL = $(DEFAULT_BPFTOOL)' \
+	'endif' > "$MKOVERRIDE"
+
 ## Generating vmlinux.h
 
 # Trigger a kernel build. "-- true" is a dummy cmdline because
 # vmtest.sh always runs the compiled kernel after building and
 # the default is ./test_progs that we don't care about.
-"$VMTEST" -- true
+"${VMTEST[@]}" -- true
 
 "$BPFTOOL" btf dump file "$KERNEL_BUILD_DIR/vmlinux" format c > "$HEADER_DIR/vmlinux.h"
 
@@ -81,14 +95,14 @@ make -B -C "$BUILD_DIR" -f "$LIBARENA_ROOT/Makefile" -j "$(nproc)" \
 	LDLIBS="-lelf -lz -lrt -lpthread -lzstd" \
 	BPF_CFLAGS="${BPF_CFLAGS:-} -D__TARGET_ARCH_$target_arch" \
 	EXTRA_CFLAGS=-Werror \
-	selftests test_libarena_asan
+	"${test_targets[@]}"
 
 # vmtest copies this tree into the guest. Use a temporary hidden directory so
 # the kernel checkout is restored after the run.
 STAGE_DIR=$(mktemp -d "$KERNEL_SELFTESTS/.libarena-standalone.XXXXXX")
-cp "$BUILD_DIR/test_libarena" "$BUILD_DIR/test_libarena_asan" \
+cp "$BUILD_DIR"/test_libarena* \
 	"$LIBARENA_ROOT/selftests/run-selftests.sh" "$STAGE_DIR"
 
 guest_stage="./$(basename "$STAGE_DIR")"
-"$VMTEST" -- \
+"${VMTEST[@]}" -- \
 	bash "$guest_stage/run-selftests.sh" "${selftest_args[@]}"

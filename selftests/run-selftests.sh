@@ -7,7 +7,7 @@ set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 
 result=0
-for binary in ./test_libarena ./test_libarena_asan; do
+for binary in ./test_libarena*; do
 	if ! "$binary" "$@"; then
 		result=1
 	fi

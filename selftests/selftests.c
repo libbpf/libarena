@@ -195,9 +195,10 @@ int main(int argc, char *argv[])
 #ifdef BPF_ARENA_ASAN
 			if (!libarena_is_asan_test_prog(name))
 				continue;
-#endif
+#else
 			if (!libarena_is_test_prog(name))
 				continue;
+#endif
 
 			ret = run_test(skel, prog);
 		}
