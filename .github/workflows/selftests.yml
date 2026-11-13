@@ -39,7 +39,7 @@ jobs:
 
       - name: Cache pahole
         id: pahole-cache
-        uses: actions/cache@v4
+        uses: ./.github/actions/main-cache
         with:
           path: ${{ runner.temp }}/pahole.tar.gz
           key: pahole-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/vmtest/build-pahole.sh') }}-v1
@@ -87,14 +87,14 @@ jobs:
         run: bash .github/vmtest/kernel-ref.sh "$KERNEL" >> "$GITHUB_OUTPUT"
 
       - name: Cache VM root image
-        uses: actions/cache@v4
+        uses: ./.github/actions/main-cache
         with:
           path: ~/.bpf_selftests/root.img
           key: vmtest-rootfs-${{ runner.os }}-${{ runner.arch }}-v1
 
       - name: Cache kernel build
         id: kernel-cache
-        uses: actions/cache@v4
+        uses: ./.github/actions/main-cache
         with:
           path: ${{ runner.temp }}/kernel.tar.zst
           key: kernel-build-${{ steps.kernel.outputs.revision }}
@@ -183,7 +183,7 @@ jobs:
           clang --version | tee "$RUNNER_TEMP/libarena-ci/compiler.txt"
 
       - name: Cache VM root image
-        uses: actions/cache@v4
+        uses: ./.github/actions/main-cache
         with:
           path: ~/.bpf_selftests/root.img
           key: vmtest-rootfs-${{ runner.os }}-${{ runner.arch }}-v1
