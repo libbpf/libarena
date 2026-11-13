@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: LGPL-2.1 OR BSD-2-Clause
+# Copyright (c) 2026 Meta Platforms, Inc. and affiliates.
+
+name: Main branch cache
+description: Restore shared caches on every ref and save only on main
+
+inputs:
+  path:
+    description: Files or directories to cache
+    required: true
+  key:
+    description: Cache key within the main-only namespace
+    required: true
+
+outputs:
+  cache-hit:
+    description: Whether the exact cache key was restored
+    value: ${{ steps.main.outputs.cache-hit || steps.restore.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    # Cache scope is fixed by GitHub. Only main can populate this namespace;
+    # new keys avoid restoring older branch- or PR-scoped cache entries.
+    - name: Restore and save on main
+      if: github.ref == 'refs/heads/main'
+      id: main
+      uses: actions/cache@v4
+      with:
+        path: ${{ inputs.path }}
+        key: main-only-v1-${{ inputs.key }}
+
+    - name: Restore from main
+      if: github.ref != 'refs/heads/main'
+      id: restore
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ inputs.path }}
+        key: main-only-v1-${{ inputs.key }}
