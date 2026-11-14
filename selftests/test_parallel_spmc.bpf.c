@@ -403,7 +403,7 @@ int spmc_wait_for_stealers_to_start(u64 target)
 }
 
 __weak
-void spmc_waste_time(void)
+int spmc_waste_time(void)
 {
 	int i;
 	int j;
@@ -412,6 +412,8 @@ void spmc_waste_time(void)
 		/* Random computation. */
 		WRITE_ONCE(j, i * 17 + 23);
 	}
+
+	return 0;
 }
 
 static int spmc_resize_owner(void)
@@ -548,7 +550,7 @@ static int spmc_wait_for_round_steals(u64 target)
 	return -ETIMEDOUT;
 }
 
-__weak int
+static __always_inline int
 spmc_burst_owner_round(u64 round)
 {
 	u64 i, base, stolen, expected, val;
@@ -557,7 +559,7 @@ spmc_burst_owner_round(u64 round)
 	base = round * TEST_SPMC_BURST_BURST;
 	round_steals = 0;
 
-	for (i = zero; i < TEST_SPMC_BURST_BURST && can_loop; i++) {
+	bpf_for(i, 0, TEST_SPMC_BURST_BURST) {
 		ret = spmc_owned_add(spmc, base + i);
 		if (ret)
 			return ret;
@@ -579,7 +581,7 @@ spmc_burst_owner_round(u64 round)
 	if (stolen > TEST_SPMC_BURST_BURST)
 		return -EINVAL;
 
-	for (i = zero; i < TEST_SPMC_BURST_BURST - stolen && can_loop; i++) {
+	bpf_for(i, 0, TEST_SPMC_BURST_BURST - stolen) {
 		ret = spmc_owned_remove(spmc, &val);
 		if (ret)
 			return ret;

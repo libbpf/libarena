@@ -72,16 +72,21 @@ mkdir -p "$BUILD_DIR" "$HEADER_DIR"
 MKOVERRIDE="$WORK_DIR"/override.mk
 VMTEST=(env MAKEFILES="$MKOVERRIDE" "$KERNEL_SELFTESTS/vmtest.sh")
 
-printf '%s\n' 'ifneq ($(filter %/tools/testing/selftests/bpf,$(CURDIR)),)' \
-	'override TRUNNER_TEST_OBJS :=' '.DEFAULT_GOAL = $(DEFAULT_BPFTOOL)' \
-	'endif' > "$MKOVERRIDE"
+if [[ ${GITHUB_ACTIONS:-false} == true ]]; then
+	# CI already downloaded the kernel and tools. Skip default build targets
+	# and Kbuild's recursive configuration make when vmtest invokes make.
+	printf '%s\n' '.DEFAULT_GOAL := libarena_prebuilt' \
+		'.PHONY: libarena_prebuilt' 'libarena_prebuilt: ;' \
+		'override MAKE := true' > "$MKOVERRIDE"
+else
+	printf '%s\n' 'ifneq ($(filter %/tools/testing/selftests/bpf,$(CURDIR)),)' \
+		'override TRUNNER_TEST_OBJS :=' '.DEFAULT_GOAL = $(DEFAULT_BPFTOOL)' \
+		'endif' > "$MKOVERRIDE"
+	# Build the kernel and tools before generating vmlinux.h.
+	"${VMTEST[@]}" -- true
+fi
 
 ## Generating vmlinux.h
-
-# Trigger a kernel build. "-- true" is a dummy cmdline because
-# vmtest.sh always runs the compiled kernel after building and
-# the default is ./test_progs that we don't care about.
-"${VMTEST[@]}" -- true
 
 "$BPFTOOL" btf dump file "$KERNEL_BUILD_DIR/vmlinux" format c > "$HEADER_DIR/vmlinux.h"
 

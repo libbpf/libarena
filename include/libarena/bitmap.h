@@ -15,38 +15,61 @@ struct arena_bitmap {
 	u64 bits[0];
 };
 
-struct arena_bitmap __arena *bmp_alloc(size_t bits);
-void bmp_free(struct arena_bitmap __arena *bmp);
+static __always_inline int bmp_free(struct arena_bitmap __arena *bmp)
+{
+	return arena_free(bmp);
+}
 
-void bmp_set_bit(u32 bit, struct arena_bitmap __arena *bmp);
-void bmp_clear_bit(u32 bit, struct arena_bitmap __arena *bmp);
+int bmp_set_bit(u32 bit, struct arena_bitmap __arena *bmp);
+int bmp_clear_bit(u32 bit, struct arena_bitmap __arena *bmp);
 bool bmp_test_and_clear_bit(u32 bit, struct arena_bitmap __arena *bmp);
 bool bmp_test_and_set_bit(u32 bit, struct arena_bitmap __arena *bmp);
 
-void bmp_clear(size_t bits, struct arena_bitmap __arena *bmp);
-void bmp_and(size_t bits, struct arena_bitmap __arena *dst, struct arena_bitmap __arena *src1, struct arena_bitmap __arena *src2);
-void bmp_or(size_t bits, struct arena_bitmap __arena *dst, struct arena_bitmap __arena *src1, struct arena_bitmap __arena *src2);
+int bmp_clear(size_t bits, struct arena_bitmap __arena *bmp);
+int bmp_and(size_t bits, struct arena_bitmap __arena *dst, struct arena_bitmap __arena *src1, struct arena_bitmap __arena *src2);
+int bmp_or(size_t bits, struct arena_bitmap __arena *dst, struct arena_bitmap __arena *src1, struct arena_bitmap __arena *src2);
 bool bmp_empty(size_t bits, struct arena_bitmap __arena *bmp);
-void bmp_copy(size_t bits, struct arena_bitmap __arena *dst, struct arena_bitmap __arena *src);
+int bmp_copy(size_t bits, struct arena_bitmap __arena *dst, struct arena_bitmap __arena *src);
+
+static __always_inline struct arena_bitmap __arena *bmp_alloc(size_t bits)
+{
+	struct arena_bitmap __arena *bmp;
+	size_t size = BITS_TO_LONG_LONGS(bits) * sizeof(bmp->bits[0]);
+
+	if (bits % BITS_PER_LONG_LONG)
+		return 0;
+
+	bmp = arena_malloc(size);
+	if (!bmp)
+		return 0;
+
+	bmp_clear(bits, bmp);
+
+	return bmp;
+}
 
 bool bmp_intersects(size_t bits, struct arena_bitmap __arena *arg1, struct arena_bitmap __arena *arg2);
 bool bmp_subset(size_t bits, struct arena_bitmap __arena *big, struct arena_bitmap __arena *small);
-void bmp_print(size_t bits, struct arena_bitmap __arena *bmp);
+int bmp_print(size_t bits, struct arena_bitmap __arena *bmp);
 
 static __always_inline
-void __bmp_set_bit(u32 bit, struct arena_bitmap __arena *bmp)
+int __bmp_set_bit(u32 bit, struct arena_bitmap __arena *bmp)
 {
 	volatile u64 __arena *word = &bmp->bits[BIT_WORD(bit)];
 
 	*word |= BIT_MASK(bit);
+
+	return 0;
 }
 
 static __always_inline
-void __bmp_clear_bit(u32 bit, struct arena_bitmap __arena *bmp)
+int __bmp_clear_bit(u32 bit, struct arena_bitmap __arena *bmp)
 {
 	volatile u64 __arena *word = &bmp->bits[BIT_WORD(bit)];
 
 	*word &= ~BIT_MASK(bit);
+
+	return 0;
 }
 
 static __always_inline

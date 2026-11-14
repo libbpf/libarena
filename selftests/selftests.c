@@ -11,6 +11,10 @@
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 
+#ifndef bpf_prog_stream_read_opts__last_field
+#define BPF_NO_STREAMS
+#endif
+
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/sysinfo.h>
@@ -45,26 +49,49 @@ static int testno = 1;
 
 int selftest_run_prog(int prog_fd)
 {
+#ifndef BPF_NO_STREAMS
+	bool emit_stderr;
 	char buf[1024];
-	int ret, err;
+	int err;
+#endif
+	int ret;
 
 	ret = libarena_run_prog(prog_fd);
 
+#ifndef BPF_NO_STREAMS
 	if (verbose) {
 		printf("BPF stdout:\n");
 		while ((err = bpf_prog_stream_read(prog_fd, 1, buf, 1024, NULL)) > 0)
 			printf("%.*s", err, buf);
 
-		if (err)
+		if (err) {
+			printf("[HARNESS] stdout stream error\n");
 			return err;
-
-		printf("BPF stderr:\n");
-		while ((err = bpf_prog_stream_read(prog_fd, 2, buf, 1024, NULL)) > 0)
-			printf("%.*s", err, buf);
-
-		if (err)
-			return err;
+		}
 	}
+
+	emit_stderr = verbose || (ret != 0);
+	if (emit_stderr)
+		printf("BPF stderr:\n");
+
+	while (true) {
+		err = bpf_prog_stream_read(prog_fd, 2, buf, 1024, NULL);
+		if (err < 0) {
+			printf("[HARNESS] stderr stream error\n");
+			return err;
+		}
+
+		/* No more data. */
+		if (err == 0)
+			break;
+
+		/* Drain don't emit. */
+		if (!emit_stderr)
+			continue;
+
+		printf("%.*s", err, buf);
+	}
+#endif
 
 	return ret;
 }
@@ -86,7 +113,7 @@ static int init_arena(selftest *skel)
 
 	ret = libarena_run_prog_args(bpf_program__fd(skel->progs.arena_alloc_reserve),
 				    &args, sizeof(args));
-	if (ret)
+	if (ret && ret != -EOPNOTSUPP)
 		return ret;
 
 #ifdef BPF_ARENA_ASAN
