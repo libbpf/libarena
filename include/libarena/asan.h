@@ -25,7 +25,7 @@ extern volatile bool asan_report_once;
 
 #ifdef BPF_ARENA_ASAN
 
-static inline
+static __always_inline
 s8 __arena *mem_to_shadow(void __arena *addr)
 {
 	return (s8 __arena *)(((u32)(u64)addr >> ASAN_SHADOW_SHIFT) +

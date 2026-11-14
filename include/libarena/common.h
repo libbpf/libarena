@@ -15,6 +15,17 @@
 #error "Arena allocators require bpf_addr_space_cast feature"
 #endif
 
+#ifndef bpf_stream_printk
+static __always_inline int bpf_stream_printk(__u32 stream_id,
+					     const char *fmt, ...)
+{
+	(void)stream_id;
+	(void)fmt;
+	return 0;
+}
+#define BPF_NO_STREAMS
+#endif
+
 #define arena_stdout(fmt, ...) bpf_stream_printk(1, (fmt), ##__VA_ARGS__)
 #define arena_stderr(fmt, ...) bpf_stream_printk(2, (fmt), ##__VA_ARGS__)
 
@@ -50,11 +61,25 @@ struct {
 volatile __u32 zero __weak;
 extern volatile u64 asan_violated;
 
-int arena_fls(__u64 word);
+/*
+ * Inline rather than a global function: buddy_chunk_get() derives its loop
+ * bound from this, and an opaque call leaves the result unbounded, so the
+ * loop state never converges and the verifier blows its jump limit.
+ */
+static __always_inline int arena_fls(__u64 word)
+{
+	if (!word)
+		return 0;
 
-void __arena *arena_malloc(size_t size);
-void __arena *arena_calloc(size_t ncount, size_t size);
-void arena_free(void __arena *ptr);
+	return 64 - __builtin_clzll(word);
+}
+
+u64 arena_malloc_internal(size_t size);
+#define arena_malloc(size) ((void __arena *)arena_malloc_internal((size)))
+u64 arena_calloc_internal(size_t ncount, size_t size);
+#define arena_calloc(ncount, size) \
+	((void __arena *)arena_calloc_internal((ncount), (size)))
+int arena_free(void __arena *ptr);
 
 /*
  * The verifier associates arenas with programs by checking LD.IMM
@@ -73,7 +98,7 @@ void arena_free(void __arena *ptr);
  * backend to exit due to a missing implementation. Provide
  * implementations for the intrinsic.
  */
-static inline int arena_memset(s8 __arena *dst, s8 val, size_t size)
+static __always_inline int arena_memset(s8 __arena *dst, s8 val, size_t size)
 {
 	size_t headalign;
 	size_t tailalign;

@@ -14,14 +14,6 @@ volatile __u32 zero = 0;
  */
 struct arena_qnode __arena __hidden qnodes[_Q_MAX_CPUS][_Q_MAX_NODES];
 
-int arena_fls(__u64 word)
-{
-	if (!word)
-		return 0;
-
-	return 64 - __builtin_clzll(word);
-}
-
 SEC("syscall")
 __weak int arena_get_info(struct arena_get_info_args *args)
 {
@@ -33,6 +25,9 @@ __weak int arena_get_info(struct arena_get_info_args *args)
 SEC("syscall")
 __weak int arena_alloc_reserve(struct arena_alloc_reserve_args *args)
 {
+	if (!bpf_ksym_exists(bpf_arena_reserve_pages))
+		return -EOPNOTSUPP;
+
 	return bpf_arena_reserve_pages(&arena, NULL, args->nr_pages);
 }
 
@@ -50,12 +45,12 @@ __weak int arena_buddy_destroy(void)
 	return buddy_destroy(&buddy);
 }
 
-__weak void __arena *arena_malloc(size_t size)
+__weak u64 arena_malloc_internal(size_t size)
 {
-	return buddy_alloc(&buddy, size);
+	return (u64)buddy_alloc(&buddy, size);
 }
 
-__weak void __arena *arena_calloc(size_t ncount, size_t size)
+__weak u64 arena_calloc_internal(size_t ncount, size_t size)
 {
 	void __arena *mem;
 	size_t total;
@@ -68,7 +63,7 @@ __weak void __arena *arena_calloc(size_t ncount, size_t size)
 	 * buddy_alloc() call. Keep it simple for now.
 	 */
 	if (unlikely(ncount && size >= __UINT64_MAX__ / ncount))
-		return NULL;
+		return 0;
 
 	total = ncount * size;
 
@@ -76,10 +71,12 @@ __weak void __arena *arena_calloc(size_t ncount, size_t size)
 	if (likely(mem))
 		arena_memset(mem, 0, total);
 
-	return mem;
+	return (u64)mem;
 }
 
-__weak void arena_free(void __arena *ptr)
+__weak int arena_free(void __arena *ptr __arg_arena)
 {
 	buddy_free(&buddy, ptr);
+
+	return 0;
 }

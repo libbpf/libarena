@@ -58,12 +58,6 @@ static volatile u64 stealers_started;
 static volatile u64 round_steals;
 
 /*
- * We have multiple stealers and a single owner. We sometimes want the owner
- * to successfully outproduce the stealers, we add a busy loop in them.
- */
-#define TEST_SPMC_WASTE_ROUNDS (1UL << 12)
-
-/*
  * The spmc data structure depends on the runtime fully
  * supporting acquire/release semantics, which is not
  * the case for all architectures.
@@ -384,6 +378,10 @@ DEFINE_PARALLEL_SPMC_TEST(singleval, TEST_SPMC_SINGLEVAL_ITERS)
 /* */
 #define TEST_SPMC_RESIZE_TAIL (SPMC_ARR_BASESZ << TEST_SPMC_RESIZE_ORDER)
 #define TEST_SPMC_RESIZE_TOTAL (TEST_SPMC_RESIZE_PREFILL + TEST_SPMC_RESIZE_TAIL)
+#define TEST_SPMC_RESIZE_DONE_EPOCH 2
+
+/* Leave enough queued items to force growth regardless of consumer speed. */
+#define TEST_SPMC_RESIZE_STEAL_LIMIT SPMC_ARR_BASESZ
 
 __weak
 int spmc_wait_for_stealers_to_start(u64 target)
@@ -402,18 +400,6 @@ int spmc_wait_for_stealers_to_start(u64 target)
 	return -ETIMEDOUT;
 }
 
-__weak
-void spmc_waste_time(void)
-{
-	int i;
-	int j;
-
-	for (i = zero; i < TEST_SPMC_WASTE_ROUNDS && can_loop; i++) {
-		/* Random computation. */
-		WRITE_ONCE(j, i * 17 + 23);
-	}
-}
-
 static int spmc_resize_owner(void)
 {
 	bool resized = false;
@@ -421,7 +407,7 @@ static int spmc_resize_owner(void)
 	int ret;
 
 	/* Get a head start vs the consumers. */
-	for (i = zero; i < TEST_SPMC_RESIZE_PREFILL && can_loop; i++) {
+	bpf_for(i, 0, TEST_SPMC_RESIZE_PREFILL) {
 		ret = spmc_owned_add(spmc, i);
 		if (ret) {
 			test_abort = true;
@@ -436,7 +422,7 @@ static int spmc_resize_owner(void)
 	if (ret)
 		return ret;
 
-	for (i = TEST_SPMC_RESIZE_PREFILL; i < TEST_SPMC_RESIZE_TOTAL && can_loop; i++) {
+	bpf_for(i, TEST_SPMC_RESIZE_PREFILL, TEST_SPMC_RESIZE_TOTAL) {
 		ret = spmc_owned_add(spmc, i);
 		if (ret) {
 			test_abort = true;
@@ -473,7 +459,7 @@ static int spmc_resize_owner(void)
 static int spmc_resize_stealer(void)
 {
 	bool owner_done = false;
-	u64 val;
+	u64 val, stolen = zero;
 	int ret;
 
 	arena_subprog_init();
@@ -485,7 +471,6 @@ static int spmc_resize_stealer(void)
 	__sync_fetch_and_add(&stealers_started, 1);
 
 	while (can_loop) {
-		spmc_waste_time();
 		if (test_abort)
 			return -EINTR;
 
@@ -494,6 +479,14 @@ static int spmc_resize_stealer(void)
 			ret = spmc_update_stats(val, false);
 			if (ret)
 				return ret;
+
+			stolen += 1;
+			if (stolen == TEST_SPMC_RESIZE_STEAL_LIMIT) {
+				ret = spmc_quiesce_on_owner(TEST_SPMC_RESIZE_DONE_EPOCH);
+				if (ret)
+					return ret;
+			}
+
 			continue;
 		}
 
@@ -501,9 +494,11 @@ static int spmc_resize_stealer(void)
 			continue;
 
 		if (ret == -ENOENT) {
-			if (owner_done)
-				break;
-			owner_done = owner_epoch >= 2;
+			if (owner_done) {
+				__sync_fetch_and_add(&stealer_epoch, 1);
+				return 0;
+			}
+			owner_done = smp_load_acquire(&owner_epoch) >= TEST_SPMC_RESIZE_DONE_EPOCH;
 			continue;
 		}
 
@@ -511,9 +506,8 @@ static int spmc_resize_stealer(void)
 		return ret;
 	}
 
-	__sync_fetch_and_add(&stealer_epoch, 1);
-
-	return 0;
+	test_abort = true;
+	return -ETIMEDOUT;
 }
 
 DEFINE_PARALLEL_SPMC_TEST(resize, TEST_SPMC_RESIZE_TOTAL)
@@ -548,7 +542,7 @@ static int spmc_wait_for_round_steals(u64 target)
 	return -ETIMEDOUT;
 }
 
-__weak int
+static __always_inline int
 spmc_burst_owner_round(u64 round)
 {
 	u64 i, base, stolen, expected, val;
@@ -557,7 +551,7 @@ spmc_burst_owner_round(u64 round)
 	base = round * TEST_SPMC_BURST_BURST;
 	round_steals = 0;
 
-	for (i = zero; i < TEST_SPMC_BURST_BURST && can_loop; i++) {
+	bpf_for(i, 0, TEST_SPMC_BURST_BURST) {
 		ret = spmc_owned_add(spmc, base + i);
 		if (ret)
 			return ret;
@@ -579,7 +573,7 @@ spmc_burst_owner_round(u64 round)
 	if (stolen > TEST_SPMC_BURST_BURST)
 		return -EINVAL;
 
-	for (i = zero; i < TEST_SPMC_BURST_BURST - stolen && can_loop; i++) {
+	bpf_for(i, 0, TEST_SPMC_BURST_BURST - stolen) {
 		ret = spmc_owned_remove(spmc, &val);
 		if (ret)
 			return ret;

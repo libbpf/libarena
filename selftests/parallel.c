@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,9 +19,21 @@
 #define MAX_PARTEST_NAME (1024)
 #define MAX_PARTEST_PREFIX (MAX_PARTEST_NAME - MAX_PARTEST_SUFFIX)
 
+/* Parallel test groups run sequentially, after joining all their workers. */
+static atomic_uint parallel_ready;
+static atomic_bool parallel_go;
+static bool parallel_abort;
+
 static void *run_parallel_prog(void *arg)
 {
 	struct bpf_program *prog = arg;
+
+	atomic_fetch_add(&parallel_ready, 1);
+	while (!atomic_load(&parallel_go))
+		;
+
+	if (parallel_abort)
+		return (void *)(intptr_t)-EINTR;
 
 	return (void *)(intptr_t)selftest_run_prog(bpf_program__fd(prog));
 }
@@ -49,6 +62,10 @@ static int run_parallel_workers(struct bpf_object *obj, const char *name,
 	void *thread_ret;
 	int ret, err = 0;
 	int worker_err;
+
+	atomic_store(&parallel_ready, 0);
+	atomic_store(&parallel_go, false);
+	parallel_abort = false;
 
 	for (nthreads = 0; nthreads < UINT_MAX; nthreads++) {
 		ret = snprintf(tdname, sizeof(tdname), "%.*s__%u", (int)prefixlen,
@@ -80,6 +97,12 @@ static int run_parallel_workers(struct bpf_object *obj, const char *name,
 
 	if (!nthreads && !err)
 		err = -ENOENT;
+
+	/* Let every worker reach the start before any enters its BPF program. */
+	while (atomic_load(&parallel_ready) < nthreads)
+		;
+	parallel_abort = err != 0;
+	atomic_store(&parallel_go, true);
 
 	for (i = 0; i < nthreads; i++) {
 		ret = pthread_join(threads[i], &thread_ret);
