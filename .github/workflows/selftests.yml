@@ -97,13 +97,6 @@ jobs:
       - name: Install pahole
         run: sudo bash .github/vmtest/install-pahole.sh "$RUNNER_TEMP/pahole/pahole.tar.gz"
 
-      - name: Resolve the kernel snapshot
-        if: matrix.kernel != 'bpf-next'
-        id: kernel
-        env:
-          KERNEL: ${{ matrix.kernel }}
-        run: bash .github/vmtest/kernel-ref.sh "$KERNEL" >> "$GITHUB_OUTPUT"
-
       - name: Cache VM root image
         uses: ./.github/actions/main-cache
         with:
@@ -116,7 +109,7 @@ jobs:
         uses: ./.github/actions/main-cache
         with:
           path: ${{ runner.temp }}/kernel.tar.zst
-          key: kernel-build-${{ steps.kernel.outputs.revision }}
+          key: kernel-${{ matrix.kernel }}
 
       - name: Enable KVM access
         run: sudo chmod 666 /dev/kvm
@@ -128,13 +121,9 @@ jobs:
           CLANG: /bin/false
           O: ${{ runner.temp }}/kernel-build
           KERNEL: ${{ matrix.kernel }}
-          KERNEL_REPOSITORY: ${{ steps.kernel.outputs.repository }}
-          KERNEL_REVISION: ${{ steps.kernel.outputs.revision }}
         run: |
-          if [[ -z "$KERNEL_REVISION" ]]; then
-            source .github/vmtest/kernel-ref.sh "${KERNEL:?}"
-            export KERNEL_REPOSITORY="$repository" KERNEL_REVISION="$revision"
-          fi
+          source .github/vmtest/kernel-ref.sh "${KERNEL:?}"
+          export KERNEL_REPOSITORY="$repository" KERNEL_REVISION="$revision"
           bash .github/vmtest/build-kernel.sh \
             2>&1 | tee "$RUNNER_TEMP/kernel-build.log"
 
