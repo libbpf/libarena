@@ -10,13 +10,20 @@ on:
   schedule:
     - cron: '0 18 * * *'
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      update-bpf-next:
+        type: boolean
+        default: false
+      kernels:
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: selftests-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: selftests-${{ inputs.update-bpf-next && 'update-bpf-next' || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ !inputs.update-bpf-next }}
 
 defaults:
   run:
@@ -62,11 +69,21 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        kernel: ['6.16', '7.1', bpf-next]
+        kernel: ${{ fromJSON(inputs.kernels || '["6.16", "7.1", "bpf-next"]') }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+
+      # Use the last completed main build before contacting upstream. The
+      # preparation job downloads it once and shares one revision with Clang.
+      - name: Restore the latest completed bpf-next build
+        if: matrix.kernel == 'bpf-next' && !inputs.update-bpf-next
+        id: bpf-next-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/kernel.tar.zst
+          key: bpf-next
 
       - name: Install kernel build dependencies
         run: sudo bash .github/vmtest/install-deps.sh
@@ -81,6 +98,7 @@ jobs:
         run: sudo bash .github/vmtest/install-pahole.sh "$RUNNER_TEMP/pahole/pahole.tar.gz"
 
       - name: Resolve the kernel snapshot
+        if: matrix.kernel != 'bpf-next'
         id: kernel
         env:
           KERNEL: ${{ matrix.kernel }}
@@ -93,6 +111,7 @@ jobs:
           key: vmtest-rootfs-${{ runner.os }}-${{ runner.arch }}-v1
 
       - name: Cache kernel build
+        if: matrix.kernel != 'bpf-next'
         id: kernel-cache
         uses: ./.github/actions/main-cache
         with:
@@ -103,24 +122,37 @@ jobs:
         run: sudo chmod 666 /dev/kvm
 
       - name: Build the kernel and its tools
-        if: steps.kernel-cache.outputs.cache-hit != 'true'
+        if: steps.bpf-next-cache.outputs.cache-matched-key == '' && steps.kernel-cache.outputs.cache-hit != 'true'
         env:
           # Optional bpftool BPF features are unnecessary for these tests.
           CLANG: /bin/false
           O: ${{ runner.temp }}/kernel-build
+          KERNEL: ${{ matrix.kernel }}
           KERNEL_REPOSITORY: ${{ steps.kernel.outputs.repository }}
           KERNEL_REVISION: ${{ steps.kernel.outputs.revision }}
         run: |
+          if [[ -z "$KERNEL_REVISION" ]]; then
+            source .github/vmtest/kernel-ref.sh "${KERNEL:?}"
+            export KERNEL_REPOSITORY="$repository" KERNEL_REVISION="$revision"
+          fi
           bash .github/vmtest/build-kernel.sh \
             2>&1 | tee "$RUNNER_TEMP/kernel-build.log"
 
       - name: Upload the kernel build
+        if: ${{ !inputs.update-bpf-next }}
         uses: actions/upload-artifact@v4
         with:
           name: kernel-${{ matrix.kernel }}
           path: ${{ runner.temp }}/kernel.tar.zst
           if-no-files-found: error
           compression-level: 0
+
+      - name: Publish the refreshed bpf-next build
+        if: inputs.update-bpf-next && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/kernel.tar.zst
+          key: bpf-next
 
       - name: Upload kernel build logs
         if: always()
@@ -137,13 +169,13 @@ jobs:
   selftests:
     name: All selftests on ${{ matrix.kernel }} / Clang ${{ matrix.clang }}
     needs: [pahole, kernels]
-    if: ${{ !cancelled() && needs.pahole.result == 'success' }}
+    if: ${{ !cancelled() && needs.pahole.result == 'success' && !inputs.update-bpf-next }}
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
-        kernel: ['6.16', '7.1', bpf-next]
+        kernel: ${{ fromJSON(inputs.kernels || '["6.16", "7.1", "bpf-next"]') }}
         clang: [21, 22, 23]
     steps:
       - uses: actions/checkout@v7
@@ -216,7 +248,7 @@ jobs:
   all-selftests:
     name: All selftests passed
     needs: selftests
-    if: always()
+    if: ${{ always() && !inputs.update-bpf-next }}
     runs-on: ubuntu-24.04
     steps:
       - name: Require all three kernels to pass
