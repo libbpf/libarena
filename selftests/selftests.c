@@ -50,6 +50,7 @@ static int testno = 1;
 int selftest_run_prog(int prog_fd)
 {
 #ifndef BPF_NO_STREAMS
+	bool emit_stderr;
 	char buf[1024];
 	int err;
 #endif
@@ -63,15 +64,32 @@ int selftest_run_prog(int prog_fd)
 		while ((err = bpf_prog_stream_read(prog_fd, 1, buf, 1024, NULL)) > 0)
 			printf("%.*s", err, buf);
 
-		if (err)
+		if (err) {
+			printf("[HARNESS] stdout stream error\n");
 			return err;
+		}
+	}
 
+	emit_stderr = verbose || (ret != 0);
+	if (emit_stderr)
 		printf("BPF stderr:\n");
-		while ((err = bpf_prog_stream_read(prog_fd, 2, buf, 1024, NULL)) > 0)
-			printf("%.*s", err, buf);
 
-		if (err)
+	while (true) {
+		err = bpf_prog_stream_read(prog_fd, 2, buf, 1024, NULL);
+		if (err < 0) {
+			printf("[HARNESS] stderr stream error\n");
 			return err;
+		}
+
+		/* No more data. */
+		if (err == 0)
+			break;
+
+		/* Drain don't emit. */
+		if (!emit_stderr)
+			continue;
+
+		printf("%.*s", err, buf);
 	}
 #endif
 
