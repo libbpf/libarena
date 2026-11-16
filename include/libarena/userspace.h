@@ -4,11 +4,15 @@
 
 #include <errno.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <sys/mman.h>
 
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
+
+#include <libarena/common.h>
+#include <libarena/asan.h>
 
 static inline int libarena_run_prog(int prog_fd)
 {
@@ -49,6 +53,53 @@ static inline int libarena_run_prog_args(int prog_fd, void *args, size_t argsize
 	ret = bpf_prog_test_run_opts(prog_fd, &opts);
 
 	return ret ?: opts.retval;
+}
+
+static inline int libarena_malloc(int prog_fd, struct buddy *buddy, size_t size, void **ptr)
+{
+	struct uarena_malloc_args args = { .buddy = buddy, .size = size };
+	int ret;
+
+	if (!ptr)
+		return -EINVAL;
+
+	*ptr = NULL;
+	ret = libarena_run_prog_args(prog_fd, &args, sizeof(args));
+	if (!ret)
+		*ptr = (void *)(uintptr_t)args.ptr;
+
+	return ret;
+}
+
+static inline int libarena_calloc(int prog_fd, struct buddy *buddy, size_t count,
+				  size_t size, void **ptr)
+{
+	struct uarena_calloc_args args = { .buddy = buddy, .count = count, .size = size };
+	int ret;
+
+	if (!ptr)
+		return -EINVAL;
+
+	*ptr = NULL;
+	ret = libarena_run_prog_args(prog_fd, &args, sizeof(args));
+	if (!ret)
+		*ptr = (void *)(uintptr_t)args.ptr;
+
+	return ret;
+}
+
+static inline int libarena_free(int prog_fd, struct buddy *buddy, void *ptr)
+{
+	struct uarena_free_args args = { .buddy = buddy, .ptr = (uintptr_t)ptr };
+
+	return libarena_run_prog_args(prog_fd, &args, sizeof(args));
+}
+
+static inline int libarena_grow(int prog_fd, struct buddy *buddy, size_t nr_chunks)
+{
+	struct uarena_grow_args args = { .buddy = buddy, .nr_chunks = nr_chunks };
+
+	return libarena_run_prog_args(prog_fd, &args, sizeof(args));
 }
 
 static inline int libarena_get_arena_base(int arena_get_info_fd,

@@ -1216,7 +1216,7 @@ done:
 	return address;
 }
 
-__weak
+__weak __always_inline
 u64 buddy_alloc_internal(struct buddy __arena *buddy __arg_arena, size_t size)
 {
 	void __arena *address;
@@ -1233,7 +1233,7 @@ u64 buddy_alloc_internal(struct buddy __arena *buddy __arg_arena, size_t size)
 	return (u64)buddy_alloc_memory(buddy, size, order, 0, true);
 }
 
-__weak
+__weak __always_inline
 u64 buddy_alloc_nogrow_internal(struct buddy __arena *buddy __arg_arena, size_t size)
 {
 	void __arena *address;
@@ -1250,7 +1250,7 @@ u64 buddy_alloc_nogrow_internal(struct buddy __arena *buddy __arg_arena, size_t 
 	return (u64)buddy_alloc_memory(buddy, size, order, 0, false);
 }
 
-__weak
+__weak __always_inline
 int buddy_grow(struct buddy __arena *buddy __arg_arena, size_t nr_chunks)
 {
 	struct buddy_chunk __arena *chunk;
@@ -1503,7 +1503,8 @@ static __always_inline void buddy_deferred_free_complete(struct buddy __arena *b
 	}
 }
 
-__weak int buddy_free(struct buddy __arena *buddy __arg_arena, void __arena *addr __arg_arena)
+__weak __always_inline
+int buddy_free(struct buddy __arena *buddy __arg_arena, void __arena *addr __arg_arena)
 {
 	unsigned long flags;
 	int ret;
@@ -1576,4 +1577,73 @@ __weak int buddy_free_bulk(struct buddy __arena *buddy __arg_arena, void __arena
 	buddy_unlock(buddy, flags);
 
 	return 0;
+}
+
+SEC("syscall")
+__weak int uarena_malloc(struct uarena_malloc_args *args)
+{
+	arena_subprog_init();
+	args->ptr = buddy_alloc_internal(args->buddy, args->size);
+
+	return args->ptr ? 0 : -ENOMEM;
+}
+
+SEC("syscall")
+__weak int uarena_malloc_nogrow(struct uarena_malloc_args *args)
+{
+	arena_subprog_init();
+	args->ptr = buddy_alloc_nogrow_internal(args->buddy, args->size);
+
+	return args->ptr ? 0 : -ENOMEM;
+}
+
+static __always_inline int uarena_calloc_common(struct uarena_calloc_args *args, bool grow)
+{
+	void __arena *ptr;
+	size_t total;
+
+	arena_subprog_init();
+	args->ptr = 0;
+	if (unlikely(args->count && args->size >= __UINT64_MAX__ / args->count))
+		return -ENOMEM;
+
+	total = args->count * args->size;
+	ptr = grow ? buddy_alloc(args->buddy, total) : buddy_alloc_nogrow(args->buddy, total);
+	if (ptr)
+		arena_memset(ptr, 0, total);
+	args->ptr = (u64)ptr;
+
+	return ptr ? 0 : -ENOMEM;
+}
+
+SEC("syscall")
+__weak int uarena_calloc(struct uarena_calloc_args *args)
+{
+	return uarena_calloc_common(args, true);
+}
+
+SEC("syscall")
+__weak int uarena_calloc_nogrow(struct uarena_calloc_args *args)
+{
+	return uarena_calloc_common(args, false);
+}
+
+SEC("syscall")
+__weak int uarena_free(struct uarena_free_args *args)
+{
+	u64 base = (u64)arena_base(&arena);
+
+	if (args->ptr && (args->ptr < base || args->ptr - base >= (1ULL << 32)))
+		return -EINVAL;
+
+	return buddy_free(args->buddy, (void __arena *)args->ptr);
+}
+
+SEC("syscall")
+__weak int uarena_grow(struct uarena_grow_args *args)
+{
+	if (args->nr_chunks > BUDDY_VADDR_SIZE / BUDDY_CHUNK_BYTES)
+		return -EINVAL;
+
+	return buddy_grow(args->buddy, args->nr_chunks);
 }

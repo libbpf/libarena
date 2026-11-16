@@ -189,5 +189,28 @@ struct arena_alloc_reserve_args {
 	u64 nr_pages;
 };
 
+struct uarena_malloc_args {
+	struct buddy __arena *buddy;
+	u64 size;
+	u64 ptr;
+};
+
+struct uarena_calloc_args {
+	struct buddy __arena *buddy;
+	u64 count;
+	u64 size;
+	u64 ptr;
+};
+
+struct uarena_free_args {
+	struct buddy __arena *buddy;
+	u64 ptr;
+};
+
+struct uarena_grow_args {
+	struct buddy __arena *buddy;
+	u64 nr_chunks;
+};
+
 /* Reasonable default number of pages reserved by arena_alloc_reserve. */
 #define ARENA_RESERVE_PAGES_DFL (8)
