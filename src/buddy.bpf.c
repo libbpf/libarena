@@ -380,75 +380,6 @@ enum {
 	BUDDY_CHUNK_PAGES	= BUDDY_CHUNK_BYTES / __PAGE_SIZE,
 };
 
-/*
- * Reserve part of the arena address space for the allocator. We use
- * this to get aligned addresses for the chunks, since the arena
- * page alloc kfuncs do not support aligning to a boundary (in this
- * case 1 MiB, see buddy.h on how this is derived).
- */
-static int buddy_reserve_arena_vaddr(struct buddy __arena *buddy __arg_arena)
-{
-	buddy->vaddr = 0;
-
-	/* Older kernels can still allocate directly at the aligned addresses. */
-	if (!bpf_ksym_exists(bpf_arena_reserve_pages))
-		return 0;
-
-	return bpf_arena_reserve_pages(&arena,
-				       (void __arena *)BUDDY_VADDR_OFFSET,
-				       BUDDY_VADDR_SIZE / __PAGE_SIZE);
-}
-
-/*
- * Free up any unused address space. Used only during teardown.
- */
-static void buddy_unreserve_arena_vaddr(struct buddy __arena *buddy __arg_arena)
-{
-	if (bpf_ksym_exists(bpf_arena_reserve_pages))
-		bpf_arena_free_pages(
-			&arena, (void __arena *)(BUDDY_VADDR_OFFSET + buddy->vaddr),
-			(BUDDY_VADDR_SIZE - buddy->vaddr) / __PAGE_SIZE);
-
-	buddy->vaddr = 0;
-}
-
-/*
- * Carve out part of the reserved address space and hand it over
- * to the buddy allocator.
- *
- * We are assuming the buddy allocator is the only allocator in the
- * system, so there is no race between this function reserving a
- * page range and some other allocator actually making the BPF call
- * to really create and reserve it.
- *
- * However, bump allocation must still be atomic because this function
- * is called without the buddy lock from multiple threads concurrently.
- */
-static int buddy_alloc_arena_vaddr(struct buddy __arena *buddy __arg_arena, u64 *vaddrp)
-{
-	u64 vaddr, old, new;
-
-	if (!buddy || !vaddrp)
-		return -EINVAL;
-
-	do {
-		vaddr = buddy->vaddr;
-		new = vaddr + BUDDY_CHUNK_BYTES;
-
-		if (new > BUDDY_VADDR_SIZE)
-			return -EINVAL;
-
-		old = __sync_val_compare_and_swap(&buddy->vaddr, vaddr, new);
-	} while (old != vaddr && can_loop);
-
-	if (old != vaddr)
-		return -EINVAL;
-
-	*vaddrp = BUDDY_VADDR_OFFSET + vaddr;
-
-	return 0;
-}
-
 static u64 arena_next_pow2(__u64 n)
 {
 	n--;
@@ -850,7 +781,6 @@ static __always_inline struct buddy_chunk __arena *buddy_chunk_get(struct buddy 
 {
 	struct buddy_chunk __arena *chunk;
 	unsigned long flags;
-	u64 vaddr;
 	int ret;
 
 	/*
@@ -859,35 +789,16 @@ static __always_inline struct buddy_chunk __arena *buddy_chunk_get(struct buddy 
 	 * We don't need the allocator lock until step 2.
 	 */
 
-	ret = buddy_alloc_arena_vaddr(buddy, &vaddr);
-	if (ret)
-		return NULL;
-
-	/* Addresses must be aligned to the chunk boundary. */
-	if (vaddr % BUDDY_CHUNK_BYTES)
-		return NULL;
-
-	/* Turn a reserved range into an allocation on kernels that support it. */
-	if (bpf_ksym_exists(bpf_arena_reserve_pages))
-		bpf_arena_free_pages(&arena, (void __arena *)vaddr,
-				     BUDDY_CHUNK_PAGES);
-
-	chunk = bpf_arena_alloc_pages(&arena, (void __arena *)vaddr,
+	/* Whole-chunk allocations and frees preserve aligned free-range starts. */
+	chunk = bpf_arena_alloc_pages(&arena, NULL,
 				      BUDDY_CHUNK_PAGES, NUMA_NO_NODE, 0);
 	if (!chunk) {
 		arena_stderr("[ALLOC FAILED]");
 		return NULL;
 	}
 
-	if (buddy_lock(buddy, flags)) {
-		/*
-		 * We cannot reclaim the vaddr space, but that is ok - this
-		 * operation should always succeed. The error path is to catch
-		 * accidental deadlocks that will cause -ENOMEMs to the program as
-		 * the allocator fails to refill itself, in which case vaddr usage
-		 * is the least of our worries.
-		 */
-		bpf_arena_free_pages(&arena, (void __arena *)vaddr, BUDDY_CHUNK_PAGES);
+	if (((u64)chunk & BUDDY_CHUNK_OFFSET_MASK) || buddy_lock(buddy, flags)) {
+		bpf_arena_free_pages(&arena, chunk, BUDDY_CHUNK_PAGES);
 		return NULL;
 	}
 
@@ -949,11 +860,6 @@ __weak int buddy_init(struct buddy __arena *buddy __arg_arena)
 		return -EINVAL;
 	buddy->deferred_free = NULL;
 
-	/* Reserve enough address space to ensure allocations are aligned. */
-	ret = buddy_reserve_arena_vaddr(buddy);
-	if (ret)
-		return ret;
-
 	_Static_assert(BUDDY_CHUNK_PAGES > 0,
 		       "chunk must use one or more pages");
 
@@ -1012,9 +918,6 @@ __weak int buddy_destroy(struct buddy __arena *buddy __arg_arena)
 			    BUDDY_CHUNK_PAGES * __PAGE_SIZE);
 		bpf_arena_free_pages(&arena, chunk, BUDDY_CHUNK_PAGES);
 	}
-
-	/* Free up any part of the address space that did not get used. */
-	buddy_unreserve_arena_vaddr(buddy);
 
 	/* Clear all fields. */
 	buddy->first_chunk = NULL;
@@ -1642,7 +1545,7 @@ __weak int uarena_free(struct uarena_free_args *args)
 SEC("syscall")
 __weak int uarena_grow(struct uarena_grow_args *args)
 {
-	if (args->nr_chunks > BUDDY_VADDR_SIZE / BUDDY_CHUNK_BYTES)
+	if (args->nr_chunks > (1ULL << 32) / BUDDY_CHUNK_BYTES - 1)
 		return -EINVAL;
 
 	return buddy_grow(args->buddy, args->nr_chunks);

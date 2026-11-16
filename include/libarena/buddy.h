@@ -31,17 +31,6 @@ enum buddy_consts {
 	/* The maximum number of blocks a chunk may have to track. */
 	BUDDY_CHUNK_ITEMS	= 1 << (BUDDY_CHUNK_NUM_ORDERS),
 	BUDDY_CHUNK_OFFSET_MASK	= BUDDY_CHUNK_BYTES - 1,
-
-	/*
-	 * Alignment for chunk allocations based on bpf_arena_alloc_pages.
-	 * The arena allocation kfunc does not have an alignment argument,
-	 * but that is required for all block calculations in the chunk to
-	 * work.
-	 */
-	BUDDY_VADDR_OFFSET	= BUDDY_CHUNK_BYTES,
-
-	/* Total arena virtual address space the allocator can consume. */
-	BUDDY_VADDR_SIZE	= BUDDY_CHUNK_BYTES << 10
 };
 
 struct buddy_header {
@@ -117,7 +106,6 @@ struct buddy_transfer_order {
 struct buddy {
 	struct buddy_chunk __arena *first_chunk;		/* Pointer to the chunk linked list. */
 	arena_spinlock_t lock;			/* Allocator lock */
-	u64 vaddr;				/* Allocation into reserved vaddr */
 	struct buddy_cache __arena *percpu[BUDDY_CACHE_MAX_CPUS];
 	struct buddy_transfer_order transfer[BUDDY_CACHE_NUM_ORDERS];
 	struct buddy_deferred_free __arena *deferred_free;
@@ -125,6 +113,11 @@ struct buddy {
 
 #ifdef __BPF__
 
+/*
+ * The arena base must be chunk-aligned and its first chunk reserved before
+ * initialization. Only buddy may allocate or free pages in the remaining range,
+ * and userspace must not fault in unallocated pages.
+ */
 int buddy_init(struct buddy __arena *buddy);
 int buddy_destroy(struct buddy __arena *buddy);
 int buddy_free(struct buddy __arena *buddy, void __arena *free);
