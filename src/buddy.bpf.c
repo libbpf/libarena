@@ -804,8 +804,10 @@ static __always_inline struct buddy_chunk __arena *buddy_chunk_get(struct buddy 
 
 	ret = buddy_chunk_init(chunk);
 	buddy_unlock(buddy, flags);
-	if (ret)
+	if (ret) {
+		bpf_arena_free_pages(&arena, chunk, BUDDY_CHUNK_PAGES);
 		return NULL;
+	}
 
 	return chunk;
 }
@@ -858,12 +860,17 @@ __weak int buddy_init(struct buddy __arena *buddy __arg_arena)
 
 	if (!asan_ready())
 		return -EINVAL;
+
+	WRITE_ONCE(buddy->mapped_bytes, 0);
+	WRITE_ONCE(buddy->allocated_bytes, 0);
 	buddy->deferred_free = NULL;
 
 	_Static_assert(BUDDY_CHUNK_PAGES > 0,
 		       "chunk must use one or more pages");
 
 	chunk = buddy_chunk_get(buddy);
+	if (!chunk)
+		return -ENOMEM;
 
 	if (buddy_lock(buddy, flags)) {
 		bpf_arena_free_pages(&arena, chunk, BUDDY_CHUNK_PAGES);
@@ -871,16 +878,13 @@ __weak int buddy_init(struct buddy __arena *buddy __arg_arena)
 	}
 
 	/* Chunk is already properly unpoisoned if allocated. */
-	if (chunk)
-		chunk->next = buddy->first_chunk;
+	chunk->next = buddy->first_chunk;
 
 	/* Put the chunk at the beginning of the list. */
 	buddy->first_chunk = chunk;
+	WRITE_ONCE(buddy->mapped_bytes, READ_ONCE(buddy->mapped_bytes) + BUDDY_CHUNK_BYTES);
 
 	buddy_unlock(buddy, flags);
-
-	if (!chunk)
-		return -ENOMEM;
 
 	ret = buddy_cache_init(buddy);
 	if (ret) {
@@ -917,11 +921,13 @@ __weak int buddy_destroy(struct buddy __arena *buddy __arg_arena)
 		asan_poison(chunk, BUDDY_POISONED,
 			    BUDDY_CHUNK_PAGES * __PAGE_SIZE);
 		bpf_arena_free_pages(&arena, chunk, BUDDY_CHUNK_PAGES);
+		WRITE_ONCE(buddy->mapped_bytes, READ_ONCE(buddy->mapped_bytes) - BUDDY_CHUNK_BYTES);
 	}
 
 	/* Clear all fields. */
 	buddy->first_chunk = NULL;
 	buddy->deferred_free = NULL;
+	WRITE_ONCE(buddy->allocated_bytes, 0);
 
 	return 0;
 }
@@ -1037,8 +1043,10 @@ static __always_inline u64 buddy_alloc_from_new_chunk(struct buddy __arena *budd
 	unsigned long flags;
 	u64 address;
 
-	if (buddy_lock(buddy, flags))
+	if (buddy_lock(buddy, flags)) {
+		bpf_arena_free_pages(&arena, chunk, BUDDY_CHUNK_PAGES);
 		return (u64)NULL;
+	}
 
 	/*
 	 * Add the chunk into the allocator and try
@@ -1046,8 +1054,12 @@ static __always_inline u64 buddy_alloc_from_new_chunk(struct buddy __arena *budd
 	 */
 	chunk->next = buddy->first_chunk;
 	buddy->first_chunk = chunk;
+	WRITE_ONCE(buddy->mapped_bytes, READ_ONCE(buddy->mapped_bytes) + BUDDY_CHUNK_BYTES);
 
 	address = buddy_chunk_alloc(buddy->first_chunk, order, norder);
+	if (address)
+		WRITE_ONCE(buddy->allocated_bytes, READ_ONCE(buddy->allocated_bytes) +
+			   ((u64)BUDDY_MIN_ALLOC_BYTES << (order + norder)));
 
 	buddy_unlock(buddy, flags);
 
@@ -1080,6 +1092,9 @@ static __always_inline void __arena *buddy_alloc_memory(struct buddy __arena *bu
 	}
 
 	address = (u8 __arena *)buddy_alloc_from_existing_chunks(buddy, order, norder);
+	if (address)
+		WRITE_ONCE(buddy->allocated_bytes, READ_ONCE(buddy->allocated_bytes) +
+			   ((u64)BUDDY_MIN_ALLOC_BYTES << (order + norder)));
 	buddy_unlock(buddy, flags);
 	if (address)
 		goto done;
@@ -1175,6 +1190,7 @@ int buddy_grow(struct buddy __arena *buddy __arg_arena, size_t nr_chunks)
 
 		chunk->next = buddy->first_chunk;
 		buddy->first_chunk = chunk;
+		WRITE_ONCE(buddy->mapped_bytes, READ_ONCE(buddy->mapped_bytes) + BUDDY_CHUNK_BYTES);
 
 		buddy_unlock(buddy, flags);
 	}
@@ -1255,6 +1271,8 @@ static __noinline int buddy_free_unlocked(struct buddy __arena *buddy __arg_aren
 		return ret;
 
 	order  = idx_get_order(chunk, idx);
+	WRITE_ONCE(buddy->allocated_bytes, READ_ONCE(buddy->allocated_bytes) -
+		   ((u64)BUDDY_MIN_ALLOC_BYTES << order));
 	header = idx_to_header(chunk, idx);
 
 	/* The header is in the block itself, keep it unpoisoned. */

@@ -104,6 +104,8 @@ struct buddy_transfer_order {
 } __attribute__((aligned(64)));
 
 struct buddy {
+	u64 mapped_bytes;
+	u64 allocated_bytes;
 	struct buddy_chunk __arena *first_chunk;		/* Pointer to the chunk linked list. */
 	arena_spinlock_t lock;			/* Allocator lock */
 	struct buddy_cache __arena *percpu[BUDDY_CACHE_MAX_CPUS];
