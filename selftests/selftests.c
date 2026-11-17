@@ -44,6 +44,8 @@ typedef struct libarena selftest;
 #define selftest__destroy libarena__destroy
 #endif
 
+#include "user_test_buddy.h"
+
 static bool verbose;
 static int testno = 1;
 
@@ -148,6 +150,13 @@ static int run_test(selftest *skel, struct bpf_program *prog)
 	return selftest_run_prog(prog_fd);
 }
 
+static int selftest_run_user(selftest *skel, int *testno)
+{
+	/* Just a single consumer for now. */
+	return selftest_run_user_buddy(skel->obj, &skel->arena->syscall_buddy,
+				     testno);
+}
+
 static void
 banner(const char *progpath)
 {
@@ -204,6 +213,14 @@ int main(int argc, char *argv[])
 		selftest__destroy(skel);
 		return 1;
 	}
+
+	/*
+	 * Userspace API tests cannot be identified with libbpf methods
+	 * because they have to be implemented as user programs.
+	 */
+	ret = selftest_run_user(skel, &testno);
+	if (ret)
+		err = -EINVAL;
 
 	bpf_object__for_each_program(prog, skel->obj) {
 		const char *name = bpf_program__name(prog);
