@@ -108,10 +108,16 @@ static int libbpf_print_fn(enum libbpf_print_level level,
 
 static int init_arena(selftest *skel)
 {
+	size_t globals_size;
+	void *arena_base = bpf_map__initial_value(skel->maps.arena, &globals_size);
 	struct arena_alloc_reserve_args args = {
+		.pgoff = 0,
 		.nr_pages = ARENA_RESERVE_PAGES_DFL,
 	};
 	int ret;
+
+	if ((void *)skel->arena == arena_base)
+		args.pgoff = div_round_up(globals_size, sysconf(_SC_PAGESIZE));
 
 	ret = libarena_run_prog_args(bpf_program__fd(skel->progs.arena_alloc_reserve),
 				    &args, sizeof(args));
