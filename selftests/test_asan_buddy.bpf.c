@@ -257,6 +257,79 @@ __weak int asan_test_buddy_blob(void)
 	return 0;
 }
 
+SEC("syscall")
+__stderr("Memory violation for address {{.*}} for write of size 1")
+__stderr("CPU: {{[0-9]+}} UID: 0 PID: {{[0-9]+}} Comm: {{.*}}")
+__stderr("Call trace:\n"
+"{{([a-zA-Z_][a-zA-Z0-9_]*\\+0x[0-9a-fA-F]+/0x[0-9a-fA-F]+\n"
+"|[ \t]+[^\n]+\n)*}}")
+__weak int asan_test_buddy_large_alloc(void)
+{
+	const size_t size = BUDDY_MAX_ALLOC_BYTES + 17;
+	u8 __arena *data;
+	int ret;
+
+	ret = buddy_init(&buddy);
+	if (ret)
+		return ret;
+
+	data = buddy_alloc(&buddy, size);
+	if (!data)
+		return -ENOMEM;
+	ret = asan_validate();
+	if (ret)
+		return ret;
+
+	data[0] = 0xa5;
+	data[size - 1] = 0x5a;
+	ret = asan_validate();
+	if (ret)
+		return ret;
+
+	data[size] = 0;
+	ret = asan_validate_addr(true, data + size);
+	if (ret)
+		return ret;
+
+	ret = buddy_free(&buddy, data);
+	if (ret)
+		return ret;
+
+	ret = asan_test_buddy_byte(data, 0, true);
+	if (ret)
+		return ret;
+
+	ret = asan_test_buddy_byte(data, size - 1, true);
+	if (ret)
+		return ret;
+
+	data = buddy_alloc(&buddy, size);
+	if (!data)
+		return -ENOMEM;
+
+	ret = asan_validate();
+	if (ret)
+		return ret;
+
+	ret = asan_test_buddy_byte(data, 0, false);
+	if (ret)
+		return ret;
+
+	ret = asan_test_buddy_byte(data, size - 1, false);
+	if (ret)
+		return ret;
+
+	ret = asan_test_buddy_byte(data, size, true);
+	if (ret)
+		return ret;
+
+	ret = buddy_free(&buddy, data);
+	if (ret)
+		return ret;
+
+	return buddy_destroy(&buddy);
+}
+
 #endif
 
 __weak char _license[] SEC("license") = "GPL";
