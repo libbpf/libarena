@@ -471,4 +471,109 @@ out:
 #endif
 }
 
+SEC("syscall")
+__weak int test_buddy_allocated_bytes(void)
+{
+	void __arena *data;
+	u64 allocated;
+	int ret;
+
+	ret = buddy_init(&buddy);
+	if (ret)
+		return ret;
+
+	allocated = buddy.allocated_bytes;
+	data = buddy_alloc(&buddy, 4097);
+	if (!data || buddy.allocated_bytes != allocated + 8192)
+		return -EINVAL;
+
+	ret = buddy_free(&buddy, data);
+	if (ret || buddy.allocated_bytes != allocated)
+		return -EINVAL;
+
+	data = buddy_alloc_nogrow(&buddy, 4097);
+	if (!data || buddy.allocated_bytes != allocated + 8192)
+		return -EINVAL;
+
+	ret = buddy_free(&buddy, data);
+	if (ret || buddy.allocated_bytes != allocated)
+		return -EINVAL;
+
+	ret = buddy_alloc_bulk(&buddy, 17, 1, alloc_path_test.bulk);
+	if (ret || buddy.allocated_bytes != allocated + 64)
+		return -EINVAL;
+
+	ret = buddy_free_bulk(&buddy, alloc_path_test.bulk, 2);
+	if (ret || buddy.allocated_bytes != allocated)
+		return -EINVAL;
+
+	ret = buddy_destroy(&buddy);
+	if (ret || buddy.allocated_bytes)
+		return -EINVAL;
+
+	return 0;
+}
+
+SEC("syscall")
+__weak int test_buddy_mapped_bytes(void)
+{
+	void __arena *data;
+	u64 mapped;
+	int ret;
+
+	ret = buddy_init(&buddy);
+	if (ret)
+		return ret;
+
+	mapped = buddy.mapped_bytes;
+	if (!mapped)
+		return -EINVAL;
+
+	ret = buddy_grow(&buddy, 1);
+	if (ret || buddy.mapped_bytes != mapped + BUDDY_CHUNK_BYTES)
+		return -EINVAL;
+
+	mapped = buddy.mapped_bytes;
+	data = buddy_alloc(&buddy, BUDDY_CHUNK_BYTES / 2);
+	if (!data || buddy.mapped_bytes != mapped)
+		return -EINVAL;
+
+	ret = buddy_free(&buddy, data);
+	if (ret || buddy.mapped_bytes != mapped)
+		return -EINVAL;
+
+	ret = buddy_destroy(&buddy);
+	if (ret || buddy.mapped_bytes || buddy.allocated_bytes)
+		return -EINVAL;
+
+	return 0;
+}
+
+SEC("syscall")
+__weak int test_buddy_cached_bytes(void)
+{
+	void __arena *data;
+	u64 allocated, used;
+	int ret;
+
+	ret = buddy_init(&buddy);
+	if (ret)
+		return ret;
+
+	allocated = buddy.allocated_bytes;
+	data = buddy_alloc(&buddy, 17);
+	if (!data)
+		return -ENOMEM;
+
+	used = allocated + BUDDY_CACHE_BATCH_SIZE * 32;
+	if (buddy.allocated_bytes != used)
+		return -EINVAL;
+
+	ret = buddy_free(&buddy, data);
+	if (ret || buddy.allocated_bytes != used)
+		return -EINVAL;
+
+	return buddy_destroy(&buddy);
+}
+
 __weak char _license[] SEC("license") = "GPL";
