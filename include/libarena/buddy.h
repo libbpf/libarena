@@ -24,6 +24,7 @@ enum buddy_consts {
 	 */
 	BUDDY_CHUNK_NUM_ORDERS	= 1 << 4,
 	BUDDY_CHUNK_BYTES	= BUDDY_MIN_ALLOC_BYTES << (BUDDY_CHUNK_NUM_ORDERS),
+	BUDDY_MAX_ALLOC_BYTES	= BUDDY_CHUNK_BYTES / 2,
 
 	/* Offset of the buddy header within a free block, see buddy.bpf.c for details */
 	BUDDY_HEADER_OFF	= 8,
@@ -103,6 +104,14 @@ struct buddy_transfer_order {
 	void __arena *objects[BUDDY_TRANSFER_CAPACITY];
 } __attribute__((aligned(64)));
 
+/* Large allocations tracked on their own. */
+struct buddy_large_alloc {
+	void __arena *addr;
+	size_t size;
+	u64 page_cnt;
+	struct buddy_large_alloc __arena *next;
+};
+
 struct buddy {
 	u64 mapped_bytes;
 	u64 allocated_bytes;
@@ -111,6 +120,7 @@ struct buddy {
 	struct buddy_cache __arena *percpu[BUDDY_CACHE_MAX_CPUS];
 	struct buddy_transfer_order transfer[BUDDY_CACHE_NUM_ORDERS];
 	struct buddy_deferred_free __arena *deferred_free;
+	struct buddy_large_alloc __arena *large_allocs;
 };
 
 #ifdef __BPF__
