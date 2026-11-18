@@ -144,20 +144,34 @@ static int test_uarena_free(struct bpf_object *obj,
 static int test_uarena_grow(struct bpf_object *obj,
 				struct buddy *buddy)
 {
-	u64 vaddr = buddy->vaddr;
+	int malloc_fd = syscall_prog_fd(obj, "uarena_malloc_nogrow");
+	void *ptr;
+	size_t i;
 	int ret;
+
+	ret = syscall_exhaust(obj, buddy);
+	if (ret)
+		return ret;
 
 	ret = libarena_grow(syscall_prog_fd(obj, "uarena_grow"), buddy, 2);
 	if (ret)
 		return ret;
 
-	return buddy->vaddr == vaddr + 2 * BUDDY_CHUNK_BYTES ? 0 : -EINVAL;
+	for (i = 0; i < 2; i++) {
+		ret = libarena_malloc(malloc_fd, buddy, BUDDY_CHUNK_BYTES / 2, &ptr);
+		if (ret)
+			return ret;
+		if (!ptr)
+			return -EINVAL;
+	}
+
+	ret = libarena_malloc(malloc_fd, buddy, BUDDY_CHUNK_BYTES / 2, &ptr);
+	return ret == -ENOMEM && !ptr ? 0 : -EINVAL;
 }
 
 static int test_uarena_malloc_nogrow(struct bpf_object *obj,
 				struct buddy *buddy)
 {
-	u64 vaddr = buddy->vaddr;
 	void *ptr = (void *)1;
 	int ret;
 
@@ -167,7 +181,7 @@ static int test_uarena_malloc_nogrow(struct bpf_object *obj,
 
 	ret = libarena_malloc(syscall_prog_fd(obj, "uarena_malloc_nogrow"),
 			      buddy, BUDDY_CHUNK_BYTES / 2, &ptr);
-	if (ret != -ENOMEM || ptr || buddy->vaddr != vaddr)
+	if (ret != -ENOMEM || ptr)
 		return -EINVAL;
 
 	return 0;

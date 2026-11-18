@@ -185,10 +185,12 @@ static __always_inline int asan_report(s8 __arena *addr, size_t sz, u32 flags)
 
 	asan_violated = (u64)addr;
 
-	arena_stderr("Memory violation for address %p (0x%lx) for %s of size %ld\n",
-			addr, (u64)addr,
-			(flags & ASAN_WRITE) ? "write" : "read",
-			sz);
+	if (flags & ASAN_WRITE)
+		arena_stderr("Memory violation for address 0x%lx for write of size %ld\n",
+			     (u64)addr, sz);
+	else
+		arena_stderr("Memory violation for address 0x%lx for read of size %ld\n",
+			     (u64)addr, sz);
 #ifndef BPF_NO_STREAMS
 	bpf_stream_print_stack(BPF_STDERR);
 #endif

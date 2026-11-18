@@ -88,8 +88,17 @@ static u64 size_to_order(size_t size);
 static __always_inline void __arena *buddy_alloc_memory(struct buddy __arena *buddy, size_t size,
 					int order, size_t norder, bool grow);
 static int buddy_free_unlocked(struct buddy __arena *buddy, u64 addr);
+static int buddy_deferred_free_start(struct buddy __arena *buddy, void __arena *addr);
 static bool buddy_deferred_free_pending(struct buddy __arena *buddy);
-static __always_inline void buddy_deferred_free_complete(struct buddy __arena *buddy);
+
+struct buddy_deferred_free {
+	struct buddy_deferred_free __arena *next;
+	u64 page_cnt;
+};
+
+static __always_inline void buddy_deferred_free_complete(struct buddy __arena *buddy,
+							struct buddy_deferred_free __arena **large_frees);
+static void buddy_large_data_free(struct buddy_deferred_free __arena *head);
 
 #define buddy_lock(buddy, flags)						\
 	(buddy_in_nmi() ? arena_spin_trylock_irqsave(&(buddy)->lock, (flags)) :	\
@@ -379,75 +388,6 @@ enum {
 	/* Number of pages to be allocated per chunk. */
 	BUDDY_CHUNK_PAGES	= BUDDY_CHUNK_BYTES / __PAGE_SIZE,
 };
-
-/*
- * Reserve part of the arena address space for the allocator. We use
- * this to get aligned addresses for the chunks, since the arena
- * page alloc kfuncs do not support aligning to a boundary (in this
- * case 1 MiB, see buddy.h on how this is derived).
- */
-static int buddy_reserve_arena_vaddr(struct buddy __arena *buddy __arg_arena)
-{
-	buddy->vaddr = 0;
-
-	/* Older kernels can still allocate directly at the aligned addresses. */
-	if (!bpf_ksym_exists(bpf_arena_reserve_pages))
-		return 0;
-
-	return bpf_arena_reserve_pages(&arena,
-				       (void __arena *)BUDDY_VADDR_OFFSET,
-				       BUDDY_VADDR_SIZE / __PAGE_SIZE);
-}
-
-/*
- * Free up any unused address space. Used only during teardown.
- */
-static void buddy_unreserve_arena_vaddr(struct buddy __arena *buddy __arg_arena)
-{
-	if (bpf_ksym_exists(bpf_arena_reserve_pages))
-		bpf_arena_free_pages(
-			&arena, (void __arena *)(BUDDY_VADDR_OFFSET + buddy->vaddr),
-			(BUDDY_VADDR_SIZE - buddy->vaddr) / __PAGE_SIZE);
-
-	buddy->vaddr = 0;
-}
-
-/*
- * Carve out part of the reserved address space and hand it over
- * to the buddy allocator.
- *
- * We are assuming the buddy allocator is the only allocator in the
- * system, so there is no race between this function reserving a
- * page range and some other allocator actually making the BPF call
- * to really create and reserve it.
- *
- * However, bump allocation must still be atomic because this function
- * is called without the buddy lock from multiple threads concurrently.
- */
-static int buddy_alloc_arena_vaddr(struct buddy __arena *buddy __arg_arena, u64 *vaddrp)
-{
-	u64 vaddr, old, new;
-
-	if (!buddy || !vaddrp)
-		return -EINVAL;
-
-	do {
-		vaddr = buddy->vaddr;
-		new = vaddr + BUDDY_CHUNK_BYTES;
-
-		if (new > BUDDY_VADDR_SIZE)
-			return -EINVAL;
-
-		old = __sync_val_compare_and_swap(&buddy->vaddr, vaddr, new);
-	} while (old != vaddr && can_loop);
-
-	if (old != vaddr)
-		return -EINVAL;
-
-	*vaddrp = BUDDY_VADDR_OFFSET + vaddr;
-
-	return 0;
-}
 
 static u64 arena_next_pow2(__u64 n)
 {
@@ -850,7 +790,6 @@ static __always_inline struct buddy_chunk __arena *buddy_chunk_get(struct buddy 
 {
 	struct buddy_chunk __arena *chunk;
 	unsigned long flags;
-	u64 vaddr;
 	int ret;
 
 	/*
@@ -859,42 +798,25 @@ static __always_inline struct buddy_chunk __arena *buddy_chunk_get(struct buddy 
 	 * We don't need the allocator lock until step 2.
 	 */
 
-	ret = buddy_alloc_arena_vaddr(buddy, &vaddr);
-	if (ret)
-		return NULL;
-
-	/* Addresses must be aligned to the chunk boundary. */
-	if (vaddr % BUDDY_CHUNK_BYTES)
-		return NULL;
-
-	/* Turn a reserved range into an allocation on kernels that support it. */
-	if (bpf_ksym_exists(bpf_arena_reserve_pages))
-		bpf_arena_free_pages(&arena, (void __arena *)vaddr,
-				     BUDDY_CHUNK_PAGES);
-
-	chunk = bpf_arena_alloc_pages(&arena, (void __arena *)vaddr,
+	/* Whole-chunk allocations and frees preserve aligned free-range starts. */
+	chunk = bpf_arena_alloc_pages(&arena, NULL,
 				      BUDDY_CHUNK_PAGES, NUMA_NO_NODE, 0);
 	if (!chunk) {
 		arena_stderr("[ALLOC FAILED]");
 		return NULL;
 	}
 
-	if (buddy_lock(buddy, flags)) {
-		/*
-		 * We cannot reclaim the vaddr space, but that is ok - this
-		 * operation should always succeed. The error path is to catch
-		 * accidental deadlocks that will cause -ENOMEMs to the program as
-		 * the allocator fails to refill itself, in which case vaddr usage
-		 * is the least of our worries.
-		 */
-		bpf_arena_free_pages(&arena, (void __arena *)vaddr, BUDDY_CHUNK_PAGES);
+	if (((u64)chunk & BUDDY_CHUNK_OFFSET_MASK) || buddy_lock(buddy, flags)) {
+		bpf_arena_free_pages(&arena, chunk, BUDDY_CHUNK_PAGES);
 		return NULL;
 	}
 
 	ret = buddy_chunk_init(chunk);
 	buddy_unlock(buddy, flags);
-	if (ret)
+	if (ret) {
+		bpf_arena_free_pages(&arena, chunk, BUDDY_CHUNK_PAGES);
 		return NULL;
+	}
 
 	return chunk;
 }
@@ -947,17 +869,18 @@ __weak int buddy_init(struct buddy __arena *buddy __arg_arena)
 
 	if (!asan_ready())
 		return -EINVAL;
-	buddy->deferred_free = NULL;
 
-	/* Reserve enough address space to ensure allocations are aligned. */
-	ret = buddy_reserve_arena_vaddr(buddy);
-	if (ret)
-		return ret;
+	WRITE_ONCE(buddy->mapped_bytes, 0);
+	WRITE_ONCE(buddy->allocated_bytes, 0);
+	WRITE_ONCE(buddy->deferred_free, NULL);
+	WRITE_ONCE(buddy->large_allocs, NULL);
 
 	_Static_assert(BUDDY_CHUNK_PAGES > 0,
 		       "chunk must use one or more pages");
 
 	chunk = buddy_chunk_get(buddy);
+	if (!chunk)
+		return -ENOMEM;
 
 	if (buddy_lock(buddy, flags)) {
 		bpf_arena_free_pages(&arena, chunk, BUDDY_CHUNK_PAGES);
@@ -965,16 +888,13 @@ __weak int buddy_init(struct buddy __arena *buddy __arg_arena)
 	}
 
 	/* Chunk is already properly unpoisoned if allocated. */
-	if (chunk)
-		chunk->next = buddy->first_chunk;
+	chunk->next = buddy->first_chunk;
 
 	/* Put the chunk at the beginning of the list. */
 	buddy->first_chunk = chunk;
+	WRITE_ONCE(buddy->mapped_bytes, READ_ONCE(buddy->mapped_bytes) + BUDDY_CHUNK_BYTES);
 
 	buddy_unlock(buddy, flags);
-
-	if (!chunk)
-		return -ENOMEM;
 
 	ret = buddy_cache_init(buddy);
 	if (ret) {
@@ -983,6 +903,24 @@ __weak int buddy_init(struct buddy __arena *buddy __arg_arena)
 	}
 
 	return 0;
+}
+
+static inline void buddy_large_destroy(struct buddy __arena *buddy __arg_arena)
+{
+	struct buddy_large_alloc __arena *alloc, *next;
+
+	/* Release just the data, metadata is regular allocations. */
+	for (alloc = buddy->large_allocs; alloc && can_loop; alloc = next) {
+		next = alloc->next;
+
+		asan_poison(alloc->addr, BUDDY_POISONED, alloc->page_cnt * __PAGE_SIZE);
+
+		bpf_arena_free_pages(&arena, alloc->addr, alloc->page_cnt);
+		WRITE_ONCE(buddy->mapped_bytes, READ_ONCE(buddy->mapped_bytes) -
+			   alloc->page_cnt * __PAGE_SIZE);
+	}
+
+	buddy->large_allocs = NULL;
 }
 
 /*
@@ -999,6 +937,7 @@ __weak int buddy_destroy(struct buddy __arena *buddy __arg_arena)
 		return -EINVAL;
 
 	buddy_cache_destroy(buddy);
+	buddy_large_destroy(buddy);
 
 	/*
 	 * Traverse all buddy chunks and free them back to the arena
@@ -1011,14 +950,13 @@ __weak int buddy_destroy(struct buddy __arena *buddy __arg_arena)
 		asan_poison(chunk, BUDDY_POISONED,
 			    BUDDY_CHUNK_PAGES * __PAGE_SIZE);
 		bpf_arena_free_pages(&arena, chunk, BUDDY_CHUNK_PAGES);
+		WRITE_ONCE(buddy->mapped_bytes, READ_ONCE(buddy->mapped_bytes) - BUDDY_CHUNK_BYTES);
 	}
-
-	/* Free up any part of the address space that did not get used. */
-	buddy_unreserve_arena_vaddr(buddy);
 
 	/* Clear all fields. */
 	buddy->first_chunk = NULL;
 	buddy->deferred_free = NULL;
+	WRITE_ONCE(buddy->allocated_bytes, 0);
 
 	return 0;
 }
@@ -1134,8 +1072,10 @@ static __always_inline u64 buddy_alloc_from_new_chunk(struct buddy __arena *budd
 	unsigned long flags;
 	u64 address;
 
-	if (buddy_lock(buddy, flags))
+	if (buddy_lock(buddy, flags)) {
+		bpf_arena_free_pages(&arena, chunk, BUDDY_CHUNK_PAGES);
 		return (u64)NULL;
+	}
 
 	/*
 	 * Add the chunk into the allocator and try
@@ -1143,8 +1083,12 @@ static __always_inline u64 buddy_alloc_from_new_chunk(struct buddy __arena *budd
 	 */
 	chunk->next = buddy->first_chunk;
 	buddy->first_chunk = chunk;
+	WRITE_ONCE(buddy->mapped_bytes, READ_ONCE(buddy->mapped_bytes) + BUDDY_CHUNK_BYTES);
 
 	address = buddy_chunk_alloc(buddy->first_chunk, order, norder);
+	if (address)
+		WRITE_ONCE(buddy->allocated_bytes, READ_ONCE(buddy->allocated_bytes) +
+			   ((u64)BUDDY_MIN_ALLOC_BYTES << (order + norder)));
 
 	buddy_unlock(buddy, flags);
 
@@ -1154,6 +1098,7 @@ static __always_inline u64 buddy_alloc_from_new_chunk(struct buddy __arena *budd
 static __always_inline void __arena *buddy_alloc_memory(struct buddy __arena *buddy __arg_arena, size_t size,
 		int order, size_t norder, bool grow)
 {
+	struct buddy_deferred_free __arena *large_frees = NULL;
 	void __arena *address = NULL;
 	u8 __arena *object;
 	struct buddy_chunk __arena *chunk;
@@ -1172,12 +1117,19 @@ static __always_inline void __arena *buddy_alloc_memory(struct buddy __arena *bu
 	if (buddy_lock(buddy, flags))
 		return NULL;
 
-	if (unlikely(buddy_deferred_free_pending(buddy))) {
-		buddy_deferred_free_complete(buddy);
-	}
+	if (buddy_deferred_free_pending(buddy))
+		buddy_deferred_free_complete(buddy, &large_frees);
 
 	address = (u8 __arena *)buddy_alloc_from_existing_chunks(buddy, order, norder);
+	if (address)
+		WRITE_ONCE(buddy->allocated_bytes, READ_ONCE(buddy->allocated_bytes) +
+			   ((u64)BUDDY_MIN_ALLOC_BYTES << (order + norder)));
+
 	buddy_unlock(buddy, flags);
+
+	if (large_frees)
+		buddy_large_data_free(large_frees);
+
 	if (address)
 		goto done;
 
@@ -1216,6 +1168,67 @@ done:
 	return address;
 }
 
+static __always_inline u64 buddy_alloc_large(struct buddy __arena *buddy __arg_arena,
+					   size_t size)
+{
+	struct buddy_large_alloc __arena *large;
+	void __arena *data, *address;
+	unsigned long flags;
+	size_t chunk_cnt;
+	u64 page_cnt;
+	int order;
+
+	if (size > (1ULL << 32) || buddy_in_nmi())
+		return 0;
+
+	/* Keep free-range starts aligned for subsequent chunk allocations. */
+	chunk_cnt = size / BUDDY_CHUNK_BYTES;
+	if (size % BUDDY_CHUNK_BYTES)
+		chunk_cnt++;
+	page_cnt = chunk_cnt * BUDDY_CHUNK_PAGES;
+
+	data = bpf_arena_alloc_pages(&arena, NULL, page_cnt, NUMA_NO_NODE, 0);
+	if (!data)
+		return 0;
+
+	/*
+	 * Do not embed metadata into the mapped data to avoid
+	 * accidentally rounding the allocation up by MiBs.
+	 *
+	 * Use the internal alloc call directly to avoid loops.
+	 */
+	order = size_to_order(sizeof(*large));
+	address = buddy_cache_alloc(buddy, sizeof(*large), order);
+	if (!address)
+		address = buddy_alloc_memory(buddy, sizeof(*large), order, 0, true);
+
+	if (!address)
+		goto free_data;
+
+	large = address;
+	large->addr = data;
+	large->size = size;
+	large->page_cnt = page_cnt;
+
+	if (buddy_lock(buddy, flags)) {
+		buddy_deferred_free_start(buddy, address);
+		goto free_data;
+	}
+	large->next = buddy->large_allocs;
+	buddy->large_allocs = large;
+	WRITE_ONCE(buddy->mapped_bytes, READ_ONCE(buddy->mapped_bytes) + page_cnt * __PAGE_SIZE);
+	WRITE_ONCE(buddy->allocated_bytes, READ_ONCE(buddy->allocated_bytes) + size);
+	buddy_unlock(buddy, flags);
+
+	asan_poison(data, BUDDY_POISONED, page_cnt * __PAGE_SIZE);
+	asan_unpoison(data, size);
+	return (u64)data;
+
+free_data:
+	bpf_arena_free_pages(&arena, data, page_cnt);
+	return 0;
+}
+
 __weak __always_inline
 u64 buddy_alloc_internal(struct buddy __arena *buddy __arg_arena, size_t size)
 {
@@ -1224,6 +1237,9 @@ u64 buddy_alloc_internal(struct buddy __arena *buddy __arg_arena, size_t size)
 
 	if (!buddy)
 		return 0;
+
+	if (size > BUDDY_MAX_ALLOC_BYTES)
+		return buddy_alloc_large(buddy, size);
 
 	order = size_to_order(size);
 	address = buddy_cache_alloc(buddy, size, order);
@@ -1272,6 +1288,7 @@ int buddy_grow(struct buddy __arena *buddy __arg_arena, size_t nr_chunks)
 
 		chunk->next = buddy->first_chunk;
 		buddy->first_chunk = chunk;
+		WRITE_ONCE(buddy->mapped_bytes, READ_ONCE(buddy->mapped_bytes) + BUDDY_CHUNK_BYTES);
 
 		buddy_unlock(buddy, flags);
 	}
@@ -1352,6 +1369,8 @@ static __noinline int buddy_free_unlocked(struct buddy __arena *buddy __arg_aren
 		return ret;
 
 	order  = idx_get_order(chunk, idx);
+	WRITE_ONCE(buddy->allocated_bytes, READ_ONCE(buddy->allocated_bytes) -
+		   ((u64)BUDDY_MIN_ALLOC_BYTES << order));
 	header = idx_to_header(chunk, idx);
 
 	/* The header is in the block itself, keep it unpoisoned. */
@@ -1428,19 +1447,27 @@ static __always_inline void buddy_deferred_free_push(struct buddy __arena *buddy
 			 head, first) != head && can_loop);
 }
 
+static inline bool is_large_alloc(void __arena __arg_arena *addr)
+{
+	return !((u64)addr & BUDDY_CHUNK_OFFSET_MASK);
+}
+
 static int buddy_deferred_free_start(struct buddy __arena *buddy __arg_arena, void __arena *addr __arg_arena)
 {
-	int order = buddy_cache_get_order(addr);
+	int order;
 
+	if (is_large_alloc(addr))
+		goto push;
+
+	order = buddy_cache_get_order(addr);
 	if (order >= BUDDY_CHUNK_NUM_ORDERS)
 		return -EINVAL;
 
-	/*
-	 * Make a linked list by chaining the allocations into a linked list.
-	 * Possible because allocations are 16 bytes minimum and so fit a pointer.
-	 */
+	/* Skip poison for large allocs, the memory is used during free. */
 	asan_poison(addr, BUDDY_POISONED, BUDDY_MIN_ALLOC_BYTES << order);
 	asan_unpoison(addr, sizeof(void *));
+
+push:
 	buddy_deferred_free_push(buddy, addr, addr);
 	return 0;
 }
@@ -1461,6 +1488,10 @@ static int buddy_deferred_free_start_bulk(struct buddy __arena *buddy __arg_aren
 	bpf_for(i, 0, naddrs) {
 		addr = addrs[i];
 		if (!addr)
+			continue;
+
+		/* Large allocations have already been handled before taking the lock. */
+		if (is_large_alloc(addr))
 			continue;
 
 		order = buddy_cache_get_order(addr);
@@ -1488,24 +1519,136 @@ static int buddy_deferred_free_start_bulk(struct buddy __arena *buddy __arg_aren
 	return 0;
 }
 
-static __always_inline void buddy_deferred_free_complete(struct buddy __arena *buddy __arg_arena)
+/* Caller holds the buddy lock. */
+static __always_inline struct buddy_large_alloc __arena *
+buddy_large_find(struct buddy __arena *buddy __arg_arena, void __arena *addr __arg_arena,
+		 struct buddy_large_alloc __arena **previous)
 {
-	void __arena *head, *old;
+	struct buddy_large_alloc __arena *large;
+
+	*previous = NULL;
+	for (large = buddy->large_allocs; large && can_loop; large = large->next) {
+		if (large->addr == addr)
+			return large;
+
+		*previous = large;
+	}
+
+	return NULL;
+}
+
+/* Caller holds the buddy lock; the pages remain mapped until it is released. */
+static __always_inline int buddy_large_meta_free_unlocked(struct buddy __arena *buddy __arg_arena,
+						    struct buddy_large_alloc __arena *large __arg_arena,
+						    struct buddy_large_alloc __arena *previous __arg_arena,
+						    struct buddy_deferred_free __arena **large_frees)
+{
+	struct buddy_deferred_free __arena *node = large->addr;
+
+	if (previous)
+		previous->next = large->next;
+	else
+		buddy->large_allocs = large->next;
+
+	WRITE_ONCE(buddy->mapped_bytes, READ_ONCE(buddy->mapped_bytes) -
+		   large->page_cnt * __PAGE_SIZE);
+	WRITE_ONCE(buddy->allocated_bytes, READ_ONCE(buddy->allocated_bytes) - large->size);
+
+	/* Retain the page count in the data so metadata can be freed under the lock. */
+	node->page_cnt = large->page_cnt;
+	node->next = *large_frees;
+	*large_frees = node;
+
+	return buddy_free_unlocked(buddy, (u64)large);
+}
+
+/* Caller has released the buddy lock. */
+static __noinline void buddy_large_data_free(struct buddy_deferred_free __arena *head __arg_arena)
+{
+	struct buddy_deferred_free __arena *next;
+	u64 page_cnt;
+
+	while (head && can_loop) {
+		next = head->next;
+
+		page_cnt = head->page_cnt;
+		asan_poison(head, BUDDY_POISONED, page_cnt * __PAGE_SIZE);
+		bpf_arena_free_pages(&arena, head, page_cnt);
+
+		head = next;
+	}
+}
+
+/* Caller holds the buddy lock and drains large_frees after releasing it. */
+static __always_inline void buddy_deferred_free_complete(struct buddy __arena *buddy __arg_arena,
+							struct buddy_deferred_free __arena **large_frees)
+{
+	struct buddy_large_alloc __arena *large, *previous;
+	void __arena *head, *addr;
 
 	head = __sync_lock_test_and_set((void __arena * __arena *)&buddy->deferred_free,
 					NULL);
 
 	while (head && can_loop) {
-		old = head;
+		addr = head;
 		head = *(void __arena * __arena *)head;
 
-		buddy_free_unlocked(buddy, (u64)old);
+		if (!is_large_alloc(addr)) {
+			buddy_free_unlocked(buddy, (u64)addr);
+			continue;
+		}
+
+		/* Requeue large frees until a context that can release pages. */
+		if (buddy_in_nmi()) {
+			buddy_deferred_free_push(buddy, addr, addr);
+			continue;
+		}
+
+		large = buddy_large_find(buddy, addr, &previous);
+		if (!large)
+			continue;
+
+		buddy_large_meta_free_unlocked(buddy, large, previous, large_frees);
 	}
+}
+
+static __always_inline int buddy_large_free(struct buddy __arena *buddy __arg_arena,
+					   void __arena *addr __arg_arena)
+{
+	struct buddy_deferred_free __arena *large_frees = NULL;
+	struct buddy_large_alloc __arena *large, *previous;
+	unsigned long flags;
+	int ret;
+
+	if (buddy_in_nmi())
+		return buddy_deferred_free_start(buddy, addr);
+
+	ret = buddy_lock(buddy, flags);
+	if (ret)
+		return buddy_deferred_free_start(buddy, addr);
+
+	large = buddy_large_find(buddy, addr, &previous);
+	if (!large) {
+		buddy_unlock(buddy, flags);
+		return -EINVAL;
+	}
+
+	ret = buddy_large_meta_free_unlocked(buddy, large, previous, &large_frees);
+	if (buddy_deferred_free_pending(buddy))
+		buddy_deferred_free_complete(buddy, &large_frees);
+
+	buddy_unlock(buddy, flags);
+
+	if (large_frees)
+		buddy_large_data_free(large_frees);
+
+	return ret;
 }
 
 __weak __always_inline
 int buddy_free(struct buddy __arena *buddy __arg_arena, void __arena *addr __arg_arena)
 {
+	struct buddy_deferred_free __arena *large_frees = NULL;
 	unsigned long flags;
 	int ret;
 
@@ -1515,6 +1658,10 @@ int buddy_free(struct buddy __arena *buddy __arg_arena, void __arena *addr __arg
 	/* Freeing NULL is a valid no-op. */
 	if (!addr)
 		return 0;
+
+	/* Regular allocations cannot start at their chunk's metadata header. */
+	if (is_large_alloc(addr))
+		return buddy_large_free(buddy, addr);
 
 	ret = buddy_cache_free(buddy, addr);
 	if (!ret)
@@ -1528,11 +1675,12 @@ int buddy_free(struct buddy __arena *buddy __arg_arena, void __arena *addr __arg
 	ret = buddy_free_unlocked(buddy, (u64)addr);
 
 	/* Drain any frees stranded during NMI/lock failure. */
-	if (unlikely(buddy_deferred_free_pending(buddy))) {
-		buddy_deferred_free_complete(buddy);
-	}
+	if (buddy_deferred_free_pending(buddy))
+		buddy_deferred_free_complete(buddy, &large_frees);
 
 	buddy_unlock(buddy, flags);
+	if (large_frees)
+		buddy_large_data_free(large_frees);
 
 	return ret;
 }
@@ -1544,7 +1692,9 @@ int buddy_free(struct buddy __arena *buddy __arg_arena, void __arena *addr __arg
  */
 __weak int buddy_free_bulk(struct buddy __arena *buddy __arg_arena, void __arena * __arena *addrs __arg_arena, size_t naddrs)
 {
+	struct buddy_deferred_free __arena *large_frees = NULL;
 	unsigned long flags;
+	void __arena *addr;
 	unsigned int i;
 	int ret;
 
@@ -1557,6 +1707,18 @@ __weak int buddy_free_bulk(struct buddy __arena *buddy __arg_arena, void __arena
 	if (!addrs)
 		return -EINVAL;
 
+	/* Handle large allocations separately because page freeing may sleep. */
+	bpf_for(i, 0, naddrs) {
+		addr = addrs[i];
+
+		if (!addr || !is_large_alloc(addr))
+			continue;
+
+		ret = buddy_large_free(buddy, addr);
+		if (ret)
+			return ret;
+	}
+
 	ret = buddy_lock(buddy, flags);
 	if (ret) {
 		return buddy_deferred_free_start_bulk(buddy, addrs, naddrs);
@@ -1564,17 +1726,21 @@ __weak int buddy_free_bulk(struct buddy __arena *buddy __arg_arena, void __arena
 
 	bpf_for(i, 0, naddrs) {
 		/* NULL pointers are ignored. */
-		if (!addrs[i])
+		addr = addrs[i];
+
+		if (!addr || is_large_alloc(addr))
 			continue;
 
 		buddy_free_unlocked(buddy, (u64)addrs[i]);
 	}
 
 	/* Drain any frees stranded during an NMI/lock failure. */
-	if (unlikely(buddy_deferred_free_pending(buddy)))
-		buddy_deferred_free_complete(buddy);
+	if (buddy_deferred_free_pending(buddy))
+		buddy_deferred_free_complete(buddy, &large_frees);
 
 	buddy_unlock(buddy, flags);
+	if (large_frees)
+		buddy_large_data_free(large_frees);
 
 	return 0;
 }
@@ -1642,7 +1808,7 @@ __weak int uarena_free(struct uarena_free_args *args)
 SEC("syscall")
 __weak int uarena_grow(struct uarena_grow_args *args)
 {
-	if (args->nr_chunks > BUDDY_VADDR_SIZE / BUDDY_CHUNK_BYTES)
+	if (args->nr_chunks > (1ULL << 32) / BUDDY_CHUNK_BYTES - 1)
 		return -EINVAL;
 
 	return buddy_grow(args->buddy, args->nr_chunks);

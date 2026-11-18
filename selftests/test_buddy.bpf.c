@@ -40,6 +40,8 @@ size_t __arena alloc_multiple_sizes[] = { 3, 17, 1025, 129, 16350, 333, 9, 517, 
 size_t __arena alloc_free_sizes[] = { 3, 17, 64, 129, 256, 333, 512, 517 };
 size_t __arena alignment_sizes[] = { 1, 3, 7, 8, 9, 15, 16, 17, 31,
 				     32, 64, 100, 128, 255, 256, 512, 1000 };
+size_t __arena large_sizes[] = { BUDDY_MAX_ALLOC_BYTES + 1,
+				 BUDDY_CHUNK_BYTES + 17, 3 * BUDDY_CHUNK_BYTES + 1 };
 
 SEC("syscall")
 __weak int test_buddy_create(void)
@@ -469,6 +471,248 @@ out:
 	destroy_ret = buddy_destroy(&buddy);
 	return ret ?: destroy_ret;
 #endif
+}
+
+SEC("syscall")
+__weak int test_buddy_large_alloc(void)
+{
+	u8 __arena *data;
+	u64 allocated, mapped;
+	size_t size;
+	u32 i;
+	int ret;
+
+	ret = buddy_init(&buddy);
+	if (ret)
+		return ret;
+
+	bpf_for(i, 0, 3) {
+		size = large_sizes[i];
+		allocated = buddy.allocated_bytes;
+		mapped = buddy.mapped_bytes;
+		data = buddy_alloc(&buddy, size);
+		if (!data)
+			return -ENOMEM;
+
+		if (buddy.allocated_bytes < allocated + size ||
+		    buddy.mapped_bytes < mapped + size)
+			return -EINVAL;
+
+		ptrs[i] = data;
+		data[0] = 0xa5;
+		data[size - 1] = 0x5a;
+
+		if (data[0] != 0xa5 || data[size - 1] != 0x5a)
+			return -EINVAL;
+	}
+
+	allocated = buddy.allocated_bytes;
+	mapped = buddy.mapped_bytes;
+	if (buddy_alloc(&buddy, (1ULL << 32) + 1) ||
+	    buddy.allocated_bytes != allocated || buddy.mapped_bytes != mapped)
+		return -EINVAL;
+
+	bpf_for(i, 0, 3) {
+		size = large_sizes[i];
+		allocated = buddy.allocated_bytes;
+		mapped = buddy.mapped_bytes;
+		ret = buddy_free(&buddy, ptrs[i]);
+		if (ret)
+			return ret;
+
+		if (buddy.allocated_bytes > allocated - size ||
+		    buddy.mapped_bytes > mapped - size)
+			return -EINVAL;
+	}
+
+	ret = buddy_destroy(&buddy);
+	if (ret || buddy.mapped_bytes || buddy.allocated_bytes)
+		return -EINVAL;
+
+	return 0;
+}
+
+SEC("syscall")
+__weak int test_buddy_large_free_bulk(void)
+{
+	const size_t large_bytes = BUDDY_MAX_ALLOC_BYTES + 1 +
+				   3 * BUDDY_CHUNK_BYTES + 1;
+	u64 allocated, mapped;
+	int ret;
+
+	ret = buddy_init(&buddy);
+	if (ret)
+		return ret;
+
+	allocated = buddy.allocated_bytes;
+	alloc_path_test.to_free[0] = buddy_alloc(&buddy, 64);
+	alloc_path_test.to_free[1] = buddy_alloc(&buddy,
+						 BUDDY_MAX_ALLOC_BYTES + 1);
+	alloc_path_test.to_free[2] = NULL;
+	alloc_path_test.to_free[3] = buddy_alloc(&buddy,
+						 3 * BUDDY_CHUNK_BYTES + 1);
+
+	if (!alloc_path_test.to_free[0] || !alloc_path_test.to_free[1] ||
+	    !alloc_path_test.to_free[3])
+		return -ENOMEM;
+
+	if (buddy.allocated_bytes < allocated + 64 + large_bytes)
+		return -EINVAL;
+
+	allocated = buddy.allocated_bytes;
+	mapped = buddy.mapped_bytes;
+	ret = buddy_free_bulk(&buddy, alloc_path_test.to_free, 4);
+	if (ret || buddy.allocated_bytes > allocated - 64 - large_bytes ||
+	    buddy.mapped_bytes > mapped - large_bytes)
+		return -EINVAL;
+
+	return buddy_destroy(&buddy);
+}
+
+SEC("syscall")
+__weak int test_buddy_large_reuse(void)
+{
+	const size_t size = 64 * BUDDY_CHUNK_BYTES;
+	void __arena *data;
+	u64 allocated, mapped;
+	u32 i;
+	int ret;
+
+	ret = buddy_init(&buddy);
+	if (ret)
+		return ret;
+
+	/* Allocate over 4 GiB cumulatively while keeping only 64 MiB live. */
+	bpf_for(i, 0, 65) {
+		allocated = buddy.allocated_bytes;
+		data = buddy_alloc(&buddy, size);
+		if (!data || buddy.allocated_bytes < allocated + size)
+			return -EINVAL;
+
+		allocated = buddy.allocated_bytes;
+		mapped = buddy.mapped_bytes;
+		ret = buddy_free(&buddy, data);
+		if (ret || buddy.allocated_bytes > allocated - size ||
+		    buddy.mapped_bytes > mapped - size)
+			return -EINVAL;
+	}
+
+	/* Destroying the allocator also releases live allocations. */
+	allocated = buddy.allocated_bytes;
+	data = buddy_alloc(&buddy, size);
+	if (!data || buddy.allocated_bytes < allocated + size)
+		return -EINVAL;
+
+	ret = buddy_destroy(&buddy);
+	if (ret || buddy.mapped_bytes || buddy.allocated_bytes)
+		return -EINVAL;
+
+	return 0;
+}
+
+SEC("syscall")
+__weak int test_buddy_allocated_bytes(void)
+{
+	void __arena *data;
+	u64 allocated;
+	int ret;
+
+	ret = buddy_init(&buddy);
+	if (ret)
+		return ret;
+
+	allocated = buddy.allocated_bytes;
+	data = buddy_alloc(&buddy, 4097);
+	if (!data || buddy.allocated_bytes != allocated + 8192)
+		return -EINVAL;
+
+	ret = buddy_free(&buddy, data);
+	if (ret || buddy.allocated_bytes != allocated)
+		return -EINVAL;
+
+	data = buddy_alloc_nogrow(&buddy, 4097);
+	if (!data || buddy.allocated_bytes != allocated + 8192)
+		return -EINVAL;
+
+	ret = buddy_free(&buddy, data);
+	if (ret || buddy.allocated_bytes != allocated)
+		return -EINVAL;
+
+	ret = buddy_alloc_bulk(&buddy, 17, 1, alloc_path_test.bulk);
+	if (ret || buddy.allocated_bytes != allocated + 64)
+		return -EINVAL;
+
+	ret = buddy_free_bulk(&buddy, alloc_path_test.bulk, 2);
+	if (ret || buddy.allocated_bytes != allocated)
+		return -EINVAL;
+
+	ret = buddy_destroy(&buddy);
+	if (ret || buddy.allocated_bytes)
+		return -EINVAL;
+
+	return 0;
+}
+
+SEC("syscall")
+__weak int test_buddy_mapped_bytes(void)
+{
+	void __arena *data;
+	u64 mapped;
+	int ret;
+
+	ret = buddy_init(&buddy);
+	if (ret)
+		return ret;
+
+	mapped = buddy.mapped_bytes;
+	if (!mapped)
+		return -EINVAL;
+
+	ret = buddy_grow(&buddy, 1);
+	if (ret || buddy.mapped_bytes != mapped + BUDDY_CHUNK_BYTES)
+		return -EINVAL;
+
+	mapped = buddy.mapped_bytes;
+	data = buddy_alloc(&buddy, BUDDY_CHUNK_BYTES / 2);
+	if (!data || buddy.mapped_bytes != mapped)
+		return -EINVAL;
+
+	ret = buddy_free(&buddy, data);
+	if (ret || buddy.mapped_bytes != mapped)
+		return -EINVAL;
+
+	ret = buddy_destroy(&buddy);
+	if (ret || buddy.mapped_bytes || buddy.allocated_bytes)
+		return -EINVAL;
+
+	return 0;
+}
+
+SEC("syscall")
+__weak int test_buddy_cached_bytes(void)
+{
+	void __arena *data;
+	u64 allocated, used;
+	int ret;
+
+	ret = buddy_init(&buddy);
+	if (ret)
+		return ret;
+
+	allocated = buddy.allocated_bytes;
+	data = buddy_alloc(&buddy, 17);
+	if (!data)
+		return -ENOMEM;
+
+	used = allocated + BUDDY_CACHE_BATCH_SIZE * 32;
+	if (buddy.allocated_bytes != used)
+		return -EINVAL;
+
+	ret = buddy_free(&buddy, data);
+	if (ret || buddy.allocated_bytes != used)
+		return -EINVAL;
+
+	return buddy_destroy(&buddy);
 }
 
 __weak char _license[] SEC("license") = "GPL";

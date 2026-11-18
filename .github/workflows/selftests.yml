@@ -218,7 +218,8 @@ jobs:
 
       - name: Build and run every selftest
         env:
-          ASAN: ${{ matrix.clang == 23 && '1' || '0' }}
+          # Instrumented allocator paths exceed the 6.16 verifier's budget.
+          ASAN: ${{ matrix.kernel != '6.16' && matrix.clang == 23 && '1' || '0' }}
           O: ${{ runner.temp }}/kernel-build
         run: |
           timeout --kill-after=1m 130m bash ./kerneltest.sh "$RUNNER_TEMP/linux" -- --verbose \

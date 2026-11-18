@@ -2,6 +2,8 @@
 /* Copyright (c) 2026 Meta Platforms, Inc. and affiliates. */
 #pragma once
 
+#define div_round_up(value, divisor) (((value) + (divisor) - 1) / (divisor))
+
 #ifdef __BPF__
 
 #include <vmlinux.h>
@@ -186,6 +188,7 @@ struct arena_get_info_args {
 };
 
 struct arena_alloc_reserve_args {
+	u64 pgoff;
 	u64 nr_pages;
 };
 
@@ -212,5 +215,5 @@ struct uarena_grow_args {
 	u64 nr_chunks;
 };
 
-/* Reasonable default number of pages reserved by arena_alloc_reserve. */
-#define ARENA_RESERVE_PAGES_DFL (8)
+/* Reserve the first MiB before initializing the buddy allocator. */
+#define ARENA_RESERVE_BYTES_DFL (1UL << 20)

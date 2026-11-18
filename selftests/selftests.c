@@ -106,16 +106,52 @@ static int libbpf_print_fn(enum libbpf_print_level level,
 	return vfprintf(stderr, format, args);
 }
 
-static int init_arena(selftest *skel)
+/* Occupy the unused prefix without overwriting globals at the arena base. */
+static int setup_arena_mapping(selftest *skel)
 {
-	struct arena_alloc_reserve_args args = {
-		.nr_pages = ARENA_RESERVE_PAGES_DFL,
-	};
+	const size_t page_size = sysconf(_SC_PAGESIZE);
+	const size_t chunk_pages = ARENA_RESERVE_BYTES_DFL / page_size;
+	struct arena_alloc_reserve_args args = { .nr_pages = chunk_pages };
+	size_t globals_size, globals_pages, prefix_pages;
+	char *arena_base = bpf_map__initial_value(skel->maps.arena, &globals_size);
 	int ret;
+
+	if (!arena_base)
+		return -EINVAL;
+
+	/* Globals may be in front or back of the arena. Affects padding. */
+	if ((void *)skel->arena == arena_base) {
+		globals_pages = div_round_up(globals_size, page_size);
+		prefix_pages = chunk_pages;
+		if (globals_pages > prefix_pages)
+			prefix_pages = div_round_up(globals_pages, chunk_pages) * chunk_pages;
+		args.pgoff = globals_pages;
+		args.nr_pages = prefix_pages - globals_pages;
+	}
+
+	if (!args.nr_pages)
+		return 0;
 
 	ret = libarena_run_prog_args(bpf_program__fd(skel->progs.arena_alloc_reserve),
 				    &args, sizeof(args));
-	if (ret && ret != -EOPNOTSUPP)
+	/*
+	 * Padding is required to align allocations
+	 * to 1MiB. If we can't reserve it, use it.
+	 */
+	if (ret == -EOPNOTSUPP) {
+		memset(arena_base + args.pgoff * page_size, 0, args.nr_pages * page_size);
+		return 0;
+	}
+
+	return ret;
+}
+
+static int init_arena(selftest *skel)
+{
+	int ret;
+
+	ret = setup_arena_mapping(skel);
+	if (ret)
 		return ret;
 
 #ifdef BPF_ARENA_ASAN
