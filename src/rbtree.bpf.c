@@ -238,7 +238,12 @@ int rb_node_free(struct rbnode __arena *rbnode __arg_arena)
 	return 0;
 }
 
+/* Keep instrumented balancing off the allocator stack without deepening cached frees. */
+#ifdef BPF_ARENA_ASAN
+static __noinline
+#else
 static __always_inline
+#endif
 int rb_node_insert(struct rbtree __arena *rbtree __arg_arena,
 		   struct rbnode __arena *node __arg_arena,
 		   enum rbtree_alloc alloc)

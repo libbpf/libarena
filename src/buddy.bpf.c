@@ -872,8 +872,8 @@ __weak int buddy_init(struct buddy __arena *buddy __arg_arena)
 
 	WRITE_ONCE(buddy->mapped_bytes, 0);
 	WRITE_ONCE(buddy->allocated_bytes, 0);
-	buddy->deferred_free = NULL;
-	buddy->large_allocs = NULL;
+	WRITE_ONCE(buddy->deferred_free, NULL);
+	WRITE_ONCE(buddy->large_allocs, NULL);
 
 	_Static_assert(BUDDY_CHUNK_PAGES > 0,
 		       "chunk must use one or more pages");
@@ -1612,8 +1612,8 @@ static __always_inline void buddy_deferred_free_complete(struct buddy __arena *b
 	}
 }
 
-static __noinline int buddy_large_free(struct buddy __arena *buddy __arg_arena,
-				      void __arena *addr __arg_arena)
+static __always_inline int buddy_large_free(struct buddy __arena *buddy __arg_arena,
+					   void __arena *addr __arg_arena)
 {
 	struct buddy_deferred_free __arena *large_frees = NULL;
 	struct buddy_large_alloc __arena *large, *previous;
