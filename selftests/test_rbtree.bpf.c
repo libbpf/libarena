@@ -289,7 +289,7 @@ __weak int test_rbtree_duplicate_fifo(void)
  * Check the lockless head and count against a walk to the leftmost node,
  * which does not use the cached head.
  */
-__weak int rbtree_check_first(struct rbtree __arena *rbtree, u64 nr)
+__weak int rbtree_check_first(struct rbtree __arena *rbtree __arg_arena, u64 nr)
 {
 	struct rbnode __arena *least = rbtree->root;
 	u64 key;
