@@ -480,18 +480,18 @@ __weak int rb_least(struct rbtree __arena *rbtree __arg_arena, u64 *key, u64 *va
  * keys in insertion order. Call it under the writer's lock.
  */
 __weak
-struct rbnode __arena *rb_next(struct rbnode __arena *node)
+u64 rb_next_internal(struct rbnode __arena *node __arg_arena)
 {
 	struct rbnode __arena *parent;
 
 	if (node->right)
-		return rbnode_least(node->right);
+		return (u64)rbnode_least(node->right);
 
 	/* Climb until we leave a left subtree; its parent comes next. */
 	while ((parent = node->parent) && node == parent->right && can_loop)
 		node = parent;
 
-	return parent;
+	return (u64)parent;
 }
 
 
